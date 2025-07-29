@@ -16,6 +16,27 @@
 
 <img width="780" height="657" alt="image" src="https://github.com/user-attachments/assets/d4cd22eb-f9ce-420b-9424-357e16c2278f" />
 
+--------------------------------------------------------------------------
 
+原版长这样
+
+<img width="780" height="657" alt="image" src="https://github.com/user-attachments/assets/32f0d9c0-704e-4b0f-8092-9e8b1f48d3c4" />
+--------------------------------------------------------------------------
+
+双击Ctrl键的搜索框是这样
+
+<img width="900" height="622" alt="image" src="https://github.com/user-attachments/assets/0af2efdc-f956-4fa3-b617-271376ee9825" />
+--------------------------------------------------------------------------
+
+我的设置是全关，只当everything可视化用
+
+<img width="1260" height="800" alt="image" src="https://github.com/user-attachments/assets/f6675b83-50a2-4b7f-8b2c-05289775fc6a" />
 
 --------------------------------------------------------------------------
+自行升级说明：
+1、官网下载everything最新版的SDK文件
+2、SDK文件里dll文件夹里会存在一个32.dll的文件，找到他
+3、官网下载everythingx86的安装版，和第一步保持同一个版本，安装好后会得到一个.exe的启动文件
+4、打开安装火柴的路径，把第二步的文件复制进去替换掉
+5、打开安装火柴的路径，把第三步的文件复制进来并重命名hc_engine.exe替换掉源文件即可
+PS：我的项目附件里会有两个需要的替换文件，替换即可
