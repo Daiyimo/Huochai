@@ -32,13 +32,11 @@
 
 ## 手动升级 Everything SDK
 
-1. 从 [voidtools](https://www.voidtools.com/) 下载 Everything 最新版 SDK
-2. SDK 解压后，在 `dll` 文件夹中找到 `Everything32.dll`
-3. 下载与 SDK 同版本的 Everything x86 安装版，安装后获得 `.exe` 启动文件
-4. 打开火柴安装目录，将第 2 步的 `Everything32.dll` 复制进去替换原文件
-5. 将第 3 步的 `.exe` 复制到安装目录，重命名为 `hc_engine.exe` 替换原文件
+1. 从 [voidtools](https://www.voidtools.com/) 下载 Everything 最新版 SDK，解压后在 `dll` 文件夹中找到 `Everything32.dll`
+2. 安装 `hc_GC5H6A_v2.1.0.11.exe`（火柴安装包）
+3. 打开火柴安装目录，将 `Everything32.dll` 和 `hc_engine.exe` 复制进去，替换原文件即可
 
-> 本项目附件中已包含所需的替换文件，直接覆盖即可。
+> 本项目附件中已包含 `Everything32.dll` 和 `hc_engine.exe`，直接覆盖即可。
 
 ## 许可证
 
