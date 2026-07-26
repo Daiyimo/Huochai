@@ -1,43 +1,51 @@
-# 火柴 (Huochai)
+# 火柴 (Huochai) 绿色单文件版
 
-火柴（原火萤酱）是我用了很久的一款软件。作者停更后，部分功能年久失修，因此开源此项目，继承火柴的极简精神，并更新 Everything SDK 内核，使其继续可用。
+火柴（原火萤酱）是我用了很久的一款软件。作者停更后，部分功能年久失修。本项目基于官方最后一版 `2.1.0.11` 逆向精简重打包：**单文件、免安装、纯本地**，核心用途不变——**双击 Ctrl 唤起搜索框，用 Everything 可视化搜索本地文件**。
 
-核心用途：**双击 Ctrl 键弹窗，用 Everything 可视化搜索本地文件**，快捷且完全本地化，无数据安全顾虑。
+## 与原版对比
 
-## 与同类工具对比
+| | 原版 | 本绿色版 |
+|---|---|---|
+| 形态 | 安装器 + 多组件 | 单 exe，双击即用 |
+| Everything 内核 | 1.4.1.895（2019） | **1.4.1.1028**（voidtools 官方签名） |
+| 聊天传输 / 登录 / 签到抽奖 | 有（服务器已关停，纯摆设） | 已删除 |
+| 皮肤 / 皮肤制作 / 小程序 / 综合导航 / 任务栏插件 | 有 | 已删除 |
+| 在线升级器 | 有 | 已删除 |
+| 设置界面 | 9 个页签 | 精简为「功能开关 \| 通用」两页 |
+| 后台托盘 | 火柴 + 引擎两个图标 | 只留火柴一个（引擎静默运行） |
+| 功能开关默认状态 | 部分默认开启 | **全部默认关闭** |
 
-| 工具   | 特点                     |
-|--------|--------------------------|
-| 火柴   | 极简、纯本地、无多余功能 |
-| uTools | 功能多但臃肿，内置浏览器 |
-| SOFAST | 较卡顿，同样功能过剩     |
+保留下来的：搜索框、本地 Everything 搜索、网页搜索（百度）、截图、便签、快捷键设置、开机自启设置、托盘设置——即「通用」页里的全部功能。
+
+## 使用
+
+1. 双击 `火柴绿色版.exe`。首次运行会静默释放到 `%LOCALAPPDATA%\HuoChat` 并**建立本地文件索引**（约几分钟，一次性，磁盘越多越慢）
+2. 双击 `Ctrl` 唤起搜索框，输入即搜
+3. 需要开机自启：托盘右键 → 设置 → 通用 → 勾选「开机启动火柴」
+
+不写注册表、不需要管理员权限、不创建快捷方式。索引建好后，搜索为毫秒级（索引常驻内存，并靠 NTFS USN 日志实时增量更新）。
+
+## 卸载
+
+删除 `%LOCALAPPDATA%\HuoChat` 文件夹和 exe 本体，即完全清除，无残留。
+
+## 常见问题
+
+- **Windows / 杀软提示"未知发布者"**：单文件为重打包产物，无数字签名，属正常现象，选择"仍要运行"即可
+- **任务管理器里有两个进程**：`HuoChat.exe`（界面+热键）与 `hc_engine.exe`（Everything 内核）。引擎在架构上必须是独立进程，无法合并，但它不在托盘/任务栏露面
+- **索引文件在哪**：`%LOCALAPPDATA%\HuoChat\Everything.db`（约 100 MB）。删除无碍，下次启动会花几分钟重建
+- **数据目录可整体备份**：`%LOCALAPPDATA%\HuoChat` 包含索引、配置、便签，拷贝即可迁移本机状态
 
 ## 截图
-
-### 升级后的 Everything 界面
-
-<img width="780" height="657" alt="升级后的界面" src="https://github.com/user-attachments/assets/d4cd22eb-f9ce-420b-9424-357e16c2278f" />
-
-### 原版界面
-
-<img width="780" height="657" alt="原版界面" src="https://github.com/user-attachments/assets/32f0d9c0-704e-4b0f-8092-9e8b1f48d3c4" />
 
 ### Ctrl 双击搜索框
 
 <img width="900" height="622" alt="搜索框" src="https://github.com/user-attachments/assets/0af2efdc-f956-4fa3-b617-271376ee9825" />
 
-### 设置（全关，仅当 Everything 可视化使用）
+### 升级后的 Everything 界面（1.4.1.1028）
 
-<img width="1260" height="800" alt="设置" src="https://github.com/user-attachments/assets/f6675b83-50a2-4b7f-8b2c-05289775fc6a" />
-
-## 手动升级 Everything SDK
-
-1. 从 [voidtools](https://www.voidtools.com/) 下载 Everything 最新版 SDK，解压后在 `dll` 文件夹中找到 `Everything32.dll`
-2. 安装 `hc_GC5H6A_v2.1.0.11.exe`（火柴安装包）
-3. 打开火柴安装目录，将 `Everything32.dll` 和 `hc_engine.exe` 复制进去，替换原文件即可
-
-> 本项目附件中已包含 `Everything32.dll` 和 `hc_engine.exe`，直接覆盖即可。
+<img width="780" height="657" alt="升级后的界面" src="https://github.com/user-attachments/assets/d4cd22eb-f9ce-420b-9424-357e16c2278f" />
 
 ## 许可证
 
-完全本地化，无服务器依赖，无数据隐私顾虑。
+完全本地化，无服务器依赖，无数据隐私顾虑。内含 voidtools Everything（随附其原始许可证），仅供个人学习交流使用。
