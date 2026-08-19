@@ -25,7 +25,7 @@ import pefile
 
 WORK_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'reverse', 'full_offline_build'))
 GREEN_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'reverse', 'green_extracted'))
-OUT_EXE = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '火柴全面离线版.exe'))
+OUT_EXE = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '火柴单文件版.exe'))
 NSIS = r'C:\Program Files (x86)\NSIS\makensis.exe'
 LAUNCHER_SRC = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'reverse', 'HuoChat_launcher.exe'))
 ICON_SRC = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'reverse', 'green_icon.ico'))
