@@ -78,10 +78,14 @@ FORBIDDEN_DOMAINS = [b'baidu.com', b'huoying666.com', b'voidtools.com', b'w3.org
 
 # 设置页安全隐藏的 Proven 集（仅 visible=false，绝不移位/删节点）
 # - menu_btn：标题栏汉堡按钮（三道杠）。隐藏后其下拉菜单含「关于」一并不可达。
-#   visible=false 会让它从布局流移除、同盒按钮左移，靠下方「按钮盒贴角」逻辑
-#   把盒宽同步缩到「可见按钮数×30」来保持贴角（2026-08-19 验证）。
 # - switch_btn：不隐藏，保留「功能开关」tab（用户要求功能菜单可见）。
 SAFE_HIDE_CONTROLS = ['menu_btn']
+
+# 代码层会按名 FindControl 后强制 SetVisible(true) 的角标，plain visible=false
+# 压不住（实测 new_btn_dot「新版本」红点会残留）。改走 neutralize_dot：0 尺寸 +
+# 无图，节点保留不闪退，但既不占布局也不渲染。副作用：红点不再占那 5px+padding，
+# 标题栏按钮盒不再被挤出溢出，mini/close 恢复自然贴角（解「红点+缩小+偏移」三症）。
+NEUTRALIZE_CONTROLS = ['new_btn_dot']
 
 
 def patch_binary(filepath, patches, label=''):
@@ -133,6 +137,27 @@ def hide_control_safe(xml_bytes, control_name):
     return new, True
 
 
+def neutralize_dot(xml_bytes, control_name):
+    """代码层会按名 FindControl 后强制 SetVisible(true)，visible=false 压不住（如
+    new_btn_dot「新版本」角标）。改为 0 尺寸且无图：节点保留（FindControl 不崩、
+    满足「不闪退」约束），但 0 尺寸 + 无图 → 不占布局空间、不渲染。
+
+    这同时解决「红点残留 / 按钮盒溢出 / mini-close 被挤歪缩小」：红点不再占那
+    5px+padding，mini/close 恢复自然布局。Returns (new_bytes, changed: bool)。
+    """
+    import re
+    pat = (rb'<Button name="%s"[^>]*/>' % control_name.encode())
+    m = re.search(pat, xml_bytes)
+    if not m:
+        print('  [WARN] %s 未找到，跳过 neutralize' % control_name)
+        return xml_bytes, False
+    repl = (b'<Button name="%s" visible="false" width="0" height="0"/>'
+            % control_name.encode())
+    xml = xml_bytes[:m.start()] + repl + xml[m.end():]
+    print('  [neutralize] %s -> 0尺寸无图（压代码层强制显示）' % control_name)
+    return xml, True
+
+
 def get_zipres_off_size(pe):
     """从 PE 资源里取 ZIPRES 的文件偏移与大小。"""
     for rt in pe.DIRECTORY_ENTRY_RESOURCE.entries:
@@ -159,19 +184,31 @@ def apply_safe_zipres_hide(target_exe):
     for ctrl in SAFE_HIDE_CONTROLS:
         xml, _ = hide_control_safe(xml, ctrl)
 
-    # 标题栏按钮贴角：按钮盒原 width=180，右对齐后右侧空隙 = 180 - 可见按钮宽，
-    # 正好是「关闭按钮到右窗缘」的缝。把盒宽缩到「可见按钮数×30」让按钮填满盒子，
-    # 关闭按钮即贴右窗缘。可见按钮恒为 menu_btn/mini_btn/close_btn 三个（其余已隐藏），
-    # 被 SAFE_HIDE 藏掉的要扣减。原地改属性，不移位/不删节点。
+    # 代码层会强制显示的角标（红点）：plain hide 压不住，改用 0 尺寸无图 neutralize。
+    # 只处理真正已知会被代码拉起的控件，避免误伤其它 visible=false 的静态按钮。
+    for ctrl in NEUTRALIZE_CONTROLS:
+        xml, _ = neutralize_dot(xml, ctrl)
+
+    # 标题栏按钮盒贴角 + 右侧留呼吸边距：
+    #   按钮盒（右锚定，无 float/halign）原 width=180。藏掉汉堡等后只剩 mini/close
+    #   两个可见按钮（各 30px）。之前把盒宽砍到 60 让 close 贴到最边角、又因红点
+    #   占位导致溢出——按钮被挤歪缩小。现改为：盒宽 = 可见按钮宽 + 右留白，并用右
+    #   padding 把 mini/close 整体左移、离右窗缘留出 BUTTON_BOX_RIGHT_PAD。
+    #   new_btn_dot 已 neutralize 成 0 尺寸，不再占位，故盒宽无需再为它留余量。
+    #   原地改属性，不移位/不删节点。
+    BUTTON_BOX_RIGHT_PAD = 10
     title_btns = ['menu_btn', 'mini_btn', 'close_btn']
     visible_n = sum(1 for b in title_btns if b not in SAFE_HIDE_CONTROLS)
-    box_w = visible_n * 30
+    box_w = visible_n * 30 + BUTTON_BOX_RIGHT_PAD
     box_key = b'<HorizontalLayout width="180">'
+    box_repl = ('<HorizontalLayout width="%d" padding="0,0,%d,0">'
+                % (box_w, BUTTON_BOX_RIGHT_PAD)).encode()
     new_btn = b'<Button name="new_btn"'
     bi = xml.find(box_key)
     if (bi != -1 and 0 < xml.find(new_btn, bi) < xml.find(b'</HorizontalLayout>', bi)):
-        xml = xml[:bi] + ('<HorizontalLayout width="%d">' % box_w).encode() + xml[bi + len(box_key):]
-        print('  [shrink] 标题栏按钮盒 180 -> %d（贴角，可见按钮 %d 个）' % (box_w, visible_n))
+        xml = xml[:bi] + box_repl + xml[bi + len(box_key):]
+        print('  [贴角] 标题栏按钮盒 180 -> %d（可见按钮 %d，右留白 %d）'
+              % (box_w, visible_n, BUTTON_BOX_RIGHT_PAD))
     else:
         print('  [WARN] 未定位到标题栏按钮盒，跳过贴角')
 
