@@ -1,0 +1,48 @@
+/* Runs only our new deny DLLs. Does not load HuoChat/Everything or send traffic. */
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <stdio.h>
+#include <shellapi.h>
+
+typedef ULONG_PTR (__stdcall *F0)(void);
+typedef ULONG_PTR (__stdcall *F2)(ULONG_PTR,ULONG_PTR);
+typedef ULONG_PTR (__stdcall *F3)(ULONG_PTR,ULONG_PTR,ULONG_PTR);
+typedef ULONG_PTR (__stdcall *F5)(ULONG_PTR,ULONG_PTR,ULONG_PTR,ULONG_PTR,ULONG_PTR);
+typedef HMODULE (WINAPI *LOADW)(LPCWSTR);
+typedef FARPROC (WINAPI *GETPROC)(HMODULE,LPCSTR);
+typedef HINSTANCE (WINAPI *SHELLW)(HWND,LPCWSTR,LPCWSTR,LPCWSTR,LPCWSTR,INT);
+#define CHECK(x) do { if(!(x)) { printf("FAILED line %d\n",__LINE__); return 1; } } while(0)
+
+int main(void) {
+    HMODULE net=LoadLibraryW(L"hcn.dll"),guard=LoadLibraryW(L"hcg.dll"),redirect;
+    LOADW load; GETPROC get; SHELLW shell;
+    CHECK(net && guard);
+    CHECK(((F2)GetProcAddress(net,"WSAStartup"))(0x202,0)==10091);
+    CHECK(((F3)GetProcAddress(net,"socket"))(2,1,6)==(ULONG_PTR)-1);
+    CHECK(((F0)GetProcAddress(net,"WSAGetLastError"))()==10013);
+    CHECK(GetProcAddress(net,(LPCSTR)111)==GetProcAddress(net,"WSAGetLastError"));
+    CHECK(GetProcAddress(net,(LPCSTR)23)==GetProcAddress(net,"socket"));
+    CHECK(((F5)GetProcAddress(net,"InternetOpenW"))(0,0,0,0,0)==0);
+    CHECK(((F5)GetProcAddress(net,"HttpSendRequestW"))(0,0,0,0,0)==0);
+    CHECK(((F5)GetProcAddress(net,"URLDownloadToFileA"))(0,0,0,0,0)==0x800C0008u);
+    load=(LOADW)GetProcAddress(guard,"LoadLibraryW");
+    get=(GETPROC)GetProcAddress(guard,"GetProcAddress");
+    shell=(SHELLW)GetProcAddress(guard,"ShellExecuteW");
+    CHECK(load && get && shell);
+    redirect=load(L"wininet.dll"); CHECK(redirect==net);
+    CHECK(load(L"WS2_32.DLL")==net);
+    CHECK(load(L"C:\\Windows\\System32\\winhttp.dll")==net);
+    CHECK(load(L"node.dll")==NULL);
+    CHECK(get(redirect,"InternetOpenW")==GetProcAddress(net,"InternetOpenW"));
+    CHECK(get(GetModuleHandleW(L"kernel32.dll"),"LoadLibraryW")==GetProcAddress(guard,"LoadLibraryW"));
+    CHECK(load(L"\\\\example.invalid\\share\\x.dll")==NULL);
+    CHECK(shell(NULL,L"open",L"https://example.invalid/",NULL,NULL,0)==(HINSTANCE)5);
+    CHECK(shell(NULL,L"open",L"about:blank",NULL,NULL,0)==(HINSTANCE)5);
+    CHECK(shell(NULL,L"open",L"C:\\test.url",NULL,NULL,0)==(HINSTANCE)5);
+    CHECK(GetProcAddress(guard,"GetTickCount")!=NULL);
+    CHECK(GetModuleHandleW(L"wininet.dll")==NULL);
+    CHECK(GetModuleHandleW(L"ws2_32.dll")==NULL);
+    #include "all_exports_test.inc"
+    puts("Guard harness passed: network failures, x86 stack conventions, loader routing, URL/UNC rejection, local forwarding.");
+    return 0;
+}
