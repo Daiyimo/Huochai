@@ -61,13 +61,11 @@ static void RequestEngineExit(LPCWSTR selfdir) {
     CloseHandle(snapshot);
 }
 
-static void StopEngineService(LPCWSTR selfdir) {
-    SC_HANDLE scm=NULL,svc=NULL; WCHAR path[1024]; SERVICE_STATUS_PROCESS st={0};
+static BOOL ServiceBelongsToDir(SC_HANDLE scm,LPCWSTR selfdir) {
+    SC_HANDLE svc=NULL; WCHAR path[1024]; BOOL owned=FALSE;
     DWORD need=0; LPQUERY_SERVICE_CONFIGW cfg=NULL;
-    scm=OpenSCManagerW(NULL,NULL,SC_MANAGER_CONNECT);
-    if(!scm) return;    svc=OpenServiceW(scm,L"Everything",
-        SERVICE_QUERY_CONFIG|SERVICE_QUERY_STATUS|SERVICE_STOP|SVC_DELETE);
-    if(!svc) { CloseServiceHandle(scm); return; }
+    svc=OpenServiceW(scm,L"Everything",SERVICE_QUERY_CONFIG);
+    if(!svc) return FALSE;
     need=0;
     QueryServiceConfigW(svc,NULL,0,&need);
     if(need) cfg=(LPQUERY_SERVICE_CONFIGW)HeapAlloc(GetProcessHeap(),0,need);
@@ -77,13 +75,32 @@ static void StopEngineService(LPCWSTR selfdir) {
         if(*bin==L'"') ++bin;
         lstrcpyW(path,bin);
         { WCHAR *q=path; while(*q && *q!=L'"') ++q; *q=0; }
-        if(InsideDir(path,selfdir)) {
-            ControlService(svc,SERVICE_CONTROL_STOP,(LPSERVICE_STATUS)&st);
-            DeleteService(svc);
-        }
+        owned=InsideDir(path,selfdir);
     }
     if(cfg) HeapFree(GetProcessHeap(),0,cfg);
-    CloseServiceHandle(svc); CloseServiceHandle(scm);
+    CloseServiceHandle(svc);
+    return owned;
+}
+
+static void StopEngineService(LPCWSTR selfdir) {
+    SC_HANDLE scm=NULL,svc=NULL; SERVICE_STATUS st={0};
+    scm=OpenSCManagerW(NULL,NULL,SC_MANAGER_CONNECT);
+    if(!scm) return;
+    if(!ServiceBelongsToDir(scm,selfdir)) { CloseServiceHandle(scm); return; }
+    /* Request only the rights needed for each operation. Standard users may
+       have permission to stop this service but not DELETE permission; asking
+       for both on one handle made OpenService fail and skipped all cleanup. */
+    svc=OpenServiceW(scm,L"Everything",SERVICE_QUERY_STATUS|SERVICE_STOP);
+    if(svc) {
+        ControlService(svc,SERVICE_CONTROL_STOP,&st);
+        CloseServiceHandle(svc);
+    }
+    svc=OpenServiceW(scm,L"Everything",SVC_DELETE);
+    if(svc) {
+        DeleteService(svc);
+        CloseServiceHandle(svc);
+    }
+    CloseServiceHandle(scm);
 }
 
 static BOOL EngineRunning(LPCWSTR selfdir) {
@@ -121,7 +138,7 @@ static void StopEngineProcesses(LPCWSTR selfdir) {
 }
 
 int WINAPI WinMain(HINSTANCE instance,HINSTANCE previous,LPSTR args,int show) {
-    WCHAR path[1024],command[1100],engine[1100],dir[1024]; DWORD n;
+    WCHAR path[1024],command[1100],engine[1100],dir[1024],envroot[1024],state[1100],temp[1100]; DWORD n;
     STARTUPINFOW si={0}; PROCESS_INFORMATION pi={0};
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits={0}; HANDLE job,mutex;
     (void)instance;(void)previous;(void)args;(void)show;
@@ -132,6 +149,20 @@ int WINAPI WinMain(HINSTANCE instance,HINSTANCE previous,LPSTR args,int show) {
     while(n && path[n-1]!=L'\\') --n;
     path[n]=0;
     lstrcpyW(dir,path);
+    /* Environment expansion and Shell32 folder APIs now agree on the payload
+       directory. hcg.dll handles the Shell32 calls; these variables cover
+       configuration and child-process expansion without changing the user's
+       real AppData environment. */
+    lstrcpyW(envroot,dir);
+    n=lstrlenW(envroot);
+    if(n>3 && envroot[n-1]==L'\\') envroot[n-1]=0;
+    SetEnvironmentVariableW(L"LOCALAPPDATA",envroot);
+    SetEnvironmentVariableW(L"APPDATA",envroot);
+    lstrcpyW(state,dir); lstrcatW(state,L"HuoChat"); CreateDirectoryW(state,NULL);
+    lstrcpyW(state,dir); lstrcatW(state,L"HuoChatIndex"); CreateDirectoryW(state,NULL);
+    lstrcpyW(temp,dir); lstrcatW(temp,L"Temp"); CreateDirectoryW(temp,NULL);
+    SetEnvironmentVariableW(L"TEMP",temp);
+    SetEnvironmentVariableW(L"TMP",temp);
     lstrcpyW(command,L"\""); lstrcatW(command,path); lstrcatW(command,L"HuoChat.exe\"");
     lstrcpyW(engine,path); lstrcatW(engine,L"hc_engine.exe");
     job=CreateJobObjectW(NULL,NULL);
@@ -150,18 +181,22 @@ int WINAPI WinMain(HINSTANCE instance,HINSTANCE previous,LPSTR args,int show) {
     ResumeThread(pi.hThread); CloseHandle(pi.hThread);
     while(WaitForSingleObject(pi.hProcess,500)==WAIT_TIMEOUT) AttachEngine(pi.dwProcessId,job,engine);
     AttachEngine(pi.dwProcessId,job,engine);
-    CloseHandle(pi.hProcess); CloseHandle(job); ReleaseMutex(mutex); CloseHandle(mutex);
+    CloseHandle(pi.hProcess);
     /* The UI has exited. HuoChat's own "net stop" needs elevation and fails
        silently, so the engine (and its service registration) would survive and
        keep this folder locked. Ask the engine to exit so it can save its index,
-       then release whatever is left. */
+       request service shutdown, wait for a clean flush, then release whatever
+       is left. The job must remain open until after -exit; closing it first
+       would terminate the attached engine before Everything.db is saved. */
     RequestEngineExit(dir);
+    StopEngineService(dir);
     { DWORD waited=0;
       while(waited<15000) {
           if(!EngineRunning(dir)) break;
           Sleep(250); waited+=250;
       } }
+    CloseHandle(job);
     StopEngineProcesses(dir);
-    StopEngineService(dir);
+    ReleaseMutex(mutex); CloseHandle(mutex);
     return 0;
 }

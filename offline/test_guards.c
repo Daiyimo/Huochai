@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <stdio.h>
 #include <shellapi.h>
+#include <shlobj.h>
 
 typedef ULONG_PTR (__stdcall *F0)(void);
 typedef ULONG_PTR (__stdcall *F2)(ULONG_PTR,ULONG_PTR);
@@ -11,11 +12,13 @@ typedef ULONG_PTR (__stdcall *F5)(ULONG_PTR,ULONG_PTR,ULONG_PTR,ULONG_PTR,ULONG_
 typedef HMODULE (WINAPI *LOADW)(LPCWSTR);
 typedef FARPROC (WINAPI *GETPROC)(HMODULE,LPCSTR);
 typedef HINSTANCE (WINAPI *SHELLW)(HWND,LPCWSTR,LPCWSTR,LPCWSTR,LPCWSTR,INT);
+typedef HRESULT (WINAPI *FOLDERW)(HWND,int,HANDLE,DWORD,LPWSTR);
 #define CHECK(x) do { if(!(x)) { printf("FAILED line %d\n",__LINE__); return 1; } } while(0)
 
 int main(void) {
     HMODULE net=LoadLibraryW(L"hcn.dll"),guard=LoadLibraryW(L"hcg.dll"),redirect;
-    LOADW load; GETPROC get; SHELLW shell;
+    LOADW load; GETPROC get; SHELLW shell; FOLDERW folder;
+    WCHAR portable[MAX_PATH],expected[MAX_PATH]; DWORD n;
     CHECK(net && guard);
     CHECK(((F2)GetProcAddress(net,"WSAStartup"))(0x202,0)==10091);
     CHECK(((F3)GetProcAddress(net,"socket"))(2,1,6)==(ULONG_PTR)-1);
@@ -28,13 +31,20 @@ int main(void) {
     load=(LOADW)GetProcAddress(guard,"LoadLibraryW");
     get=(GETPROC)GetProcAddress(guard,"GetProcAddress");
     shell=(SHELLW)GetProcAddress(guard,"ShellExecuteW");
-    CHECK(load && get && shell);
+    folder=(FOLDERW)GetProcAddress(guard,"SHGetFolderPathW");
+    CHECK(load && get && shell && folder);
     redirect=load(L"wininet.dll"); CHECK(redirect==net);
     CHECK(load(L"WS2_32.DLL")==net);
     CHECK(load(L"C:\\Windows\\System32\\winhttp.dll")==net);
     CHECK(load(L"node.dll")==NULL);
     CHECK(get(redirect,"InternetOpenW")==GetProcAddress(net,"InternetOpenW"));
     CHECK(get(GetModuleHandleW(L"kernel32.dll"),"LoadLibraryW")==GetProcAddress(guard,"LoadLibraryW"));
+    CHECK(get(GetModuleHandleW(L"shell32.dll"),"SHGetFolderPathW")==GetProcAddress(guard,"SHGetFolderPathW"));
+    CHECK(SUCCEEDED(folder(NULL,CSIDL_LOCAL_APPDATA,NULL,0,portable)));
+    n=GetModuleFileNameW(guard,expected,MAX_PATH); CHECK(n && n<MAX_PATH);
+    while(n && expected[n-1]!=L'\\') --n;
+    if(n>3) expected[n-1]=0; else expected[n]=0;
+    CHECK(lstrcmpiW(portable,expected)==0);
     CHECK(load(L"\\\\example.invalid\\share\\x.dll")==NULL);
     CHECK(shell(NULL,L"open",L"https://example.invalid/",NULL,NULL,0)==(HINSTANCE)5);
     CHECK(shell(NULL,L"open",L"about:blank",NULL,NULL,0)==(HINSTANCE)5);
@@ -43,6 +53,6 @@ int main(void) {
     CHECK(GetModuleHandleW(L"wininet.dll")==NULL);
     CHECK(GetModuleHandleW(L"ws2_32.dll")==NULL);
     #include "all_exports_test.inc"
-    puts("Guard harness passed: network failures, x86 stack conventions, loader routing, URL/UNC rejection, local forwarding.");
+    puts("Guard harness passed: network failures, portable AppData, x86 stack conventions, loader routing, URL/UNC rejection, local forwarding.");
     return 0;
 }
