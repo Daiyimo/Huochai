@@ -1,0 +1,294 @@
+/* Local-only API guards. Built without a C runtime. Never contacts a network. */
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <shellapi.h>
+#include <shlobj.h>
+#include <objbase.h>
+
+static HMODULE self_module;
+
+BOOL WINAPI DllMain(HINSTANCE module, DWORD reason, LPVOID reserved) {
+    (void)reserved;
+    if (reason == DLL_PROCESS_ATTACH) self_module = module;
+    return TRUE;
+}
+
+static WCHAR lower(WCHAR c) { return c >= L'A' && c <= L'Z' ? c + 32 : c; }
+static BOOL contains(LPCWSTR s, LPCWSTR part) {
+    LPCWSTR a, b;
+    if (!s) return FALSE;
+    for (; *s; ++s) {
+        for (a = s, b = part; *a && *b && lower(*a) == lower(*b); ++a, ++b) {}
+        if (!*b) return TRUE;
+    }
+    return FALSE;
+}
+static BOOL wide(LPCSTR text, WCHAR *out, int count) {
+    if (!text) { out[0] = 0; return TRUE; }
+    return MultiByteToWideChar(CP_ACP, 0, text, -1, out, count) != 0;
+}
+static BOOL remote(LPCWSTR text) {
+    if (!text) return FALSE;
+    return contains(text, L"://") || contains(text, L"mailto:") ||
+        contains(text, L"about:") || contains(text, L"javascript:") || contains(text, L"data:") ||
+        contains(text, L"microsoft-edge:") || contains(text, L"www.") ||
+        contains(text, L"\\\\?\\UNC\\") || contains(text, L"\\\\?\\GLOBALROOT\\Device\\Mup") ||
+        contains(text, L"\\Device\\Mup") || contains(text, L"\\Device\\LanmanRedirector");
+}
+static BOOL local_path(LPCWSTR path) {
+    WCHAR drive[4];
+    if (!path) return TRUE;
+    if (remote(path)) return FALSE;
+    /* Local device/volume/pipe namespaces are required by Everything. */
+    if ((path[0] == L'\\' && path[1] == L'\\') ||
+        (path[0] == L'/' && path[1] == L'/')) {
+        if (!((path[2] == L'?' || path[2] == L'.') && path[3] == L'\\')) return FALSE;
+        path += 4;
+    }
+    if (path[0] && path[1] == L':') {
+        drive[0] = path[0]; drive[1] = L':'; drive[2] = L'\\'; drive[3] = 0;
+        if (GetDriveTypeW(drive) == DRIVE_REMOTE) return FALSE;
+    }
+    return TRUE;
+}
+static BOOL local_a(LPCSTR path) {
+    WCHAR buf[1024];
+    return wide(path, buf, 1024) && local_path(buf);
+}
+/* Kept in step with policy.NETWORK_DLLS; build.py asserts the two agree. */
+static BOOL network_module(LPCWSTR name) {
+    LPCWSTR base = name, p;
+    if (!name) return FALSE;
+    for (p = name; *p; ++p) if (*p == L'\\' || *p == L'/') base = p + 1;
+    return contains(base, L"wininet") || contains(base, L"winhttp") ||
+        contains(base, L"ws2_32") || contains(base, L"wsock32") ||
+        contains(base, L"urlmon") || contains(base, L"dnsapi") ||
+        contains(base, L"netapi32") || contains(base, L"iphlpapi") ||
+        contains(base, L"httpapi") || contains(base, L"webio") ||
+        contains(base, L"msxml") || contains(base, L"mshtml") ||
+        contains(base, L"ieframe") || contains(base, L"wldap32") ||
+        contains(base, L"rasapi32") || contains(base, L"api-ms-win-net-") ||
+        contains(base, L"node.dll") || contains(base, L"winrnr") ||
+        contains(base, L"mpr.dll") || contains(base, L"schannel.dll") ||
+        contains(base, L"secur32.dll") || contains(base, L"ncrypt.dll") ||
+        contains(base, L"davclnt.dll") || contains(base, L"nlaapi.dll") ||
+        contains(base, L"netiohlp.dll") || contains(base, L"wsnmp32.dll");
+}
+static HMODULE net_stub(void) {
+    WCHAR path[1024]; DWORD n, i;
+    const WCHAR name[] = L"hcn.dll";
+    n = GetModuleFileNameW(self_module, path, 1024);
+    if (!n || n >= 1015) return NULL;
+    while (n && path[n-1] != L'\\' && path[n-1] != L'/') --n;
+    for (i = 0; i < sizeof(name)/sizeof(WCHAR); ++i) path[n+i] = name[i];
+    return LoadLibraryExW(path, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
+}
+
+HMODULE WINAPI Guard_LoadLibraryExW(LPCWSTR name, HANDLE file, DWORD flags) {
+    if (!local_path(name)) { SetLastError(ERROR_ACCESS_DENIED); return NULL; }
+    /* Missing optional web components must remain missing; a fake handle would
+       let legacy code call absent wke/COM exports through a null pointer. */
+    if (contains(name,L"node.dll") || contains(name,L"mshtml") || contains(name,L"msxml") || contains(name,L"ieframe")) {
+        SetLastError(ERROR_ACCESS_DENIED); return NULL;
+    }
+    if (network_module(name)) return net_stub();
+    return LoadLibraryExW(name, file, flags);
+}
+HMODULE WINAPI Guard_LoadLibraryW(LPCWSTR name) { return Guard_LoadLibraryExW(name, NULL, 0); }
+HMODULE WINAPI Guard_LoadLibraryExA(LPCSTR name, HANDLE file, DWORD flags) {
+    WCHAR buf[1024];
+    if (!wide(name, buf, 1024)) { SetLastError(ERROR_ACCESS_DENIED); return NULL; }
+    return Guard_LoadLibraryExW(buf, file, flags);
+}
+HMODULE WINAPI Guard_LoadLibraryA(LPCSTR name) { return Guard_LoadLibraryExA(name, NULL, 0); }
+
+FARPROC WINAPI Guard_GetProcAddress(HMODULE module, LPCSTR name) {
+    WCHAR path[1024]; HMODULE guard, net; FARPROC proc;
+    if (GetModuleFileNameW(module, path, 1024) && network_module(path)) {
+        if ((ULONG_PTR)name <= 0xffff) { SetLastError(ERROR_PROC_NOT_FOUND); return NULL; }
+        net = net_stub();
+        return net ? GetProcAddress(net, name) : NULL;
+    }
+    /* Dynamic resolution must not bypass guarded kernel/shell/COM exports. */
+    if ((ULONG_PTR)name > 0xffff) {
+        guard = self_module;
+        if (lstrcmpA(name, "LoadLibraryA") == 0 || lstrcmpA(name, "LoadLibraryW") == 0 ||
+            lstrcmpA(name, "LoadLibraryExA") == 0 || lstrcmpA(name, "LoadLibraryExW") == 0 ||
+            lstrcmpA(name, "GetProcAddress") == 0 || lstrcmpA(name, "ShellExecuteA") == 0 ||
+            lstrcmpA(name, "ShellExecuteW") == 0 || lstrcmpA(name, "ShellExecuteExW") == 0 ||
+            lstrcmpA(name, "ShellExecuteExA") == 0 || lstrcmpA(name, "CoCreateInstance") == 0 ||
+            lstrcmpA(name, "CoGetClassObject") == 0 || lstrcmpA(name, "CLSIDFromProgID") == 0 ||
+            lstrcmpA(name, "CreateFileA") == 0 || lstrcmpA(name, "CreateFileW") == 0 ||
+            lstrcmpA(name, "GetFileAttributesA") == 0 || lstrcmpA(name, "GetFileAttributesW") == 0 ||
+            lstrcmpA(name, "FindFirstFileA") == 0 || lstrcmpA(name, "FindFirstFileW") == 0 ||
+            lstrcmpA(name, "FindFirstFileExA") == 0 || lstrcmpA(name, "FindFirstFileExW") == 0) {
+            proc = GetProcAddress(guard, name);
+            if (!proc) SetLastError(ERROR_PROC_NOT_FOUND);
+            return proc;
+        }
+    }
+    return GetProcAddress(module, name);
+}
+
+static BOOL shell_name(LPCWSTR file) {
+    LPCWSTR first, end, leaf, p;
+    if (!file || !*file) return FALSE;
+    first = file;
+    end = file + lstrlenW(file);
+    if (end - first >= 2 && *first == L'"' && end[-1] == L'"') {
+        ++first; --end;
+    }
+    if (first == end) return FALSE;
+    leaf = first;
+    for (p = first; p < end; ++p)
+        if (*p == L'\\' || *p == L'/' || *p == L':') leaf = p + 1;
+    /* Explicit directory/drive targets remain valid (e.g. C:\\ or C:\\docs\\).
+       Removed component constants contain spaces, not an empty string: the
+       legacy startup code appends all 23 characters to its current directory.
+       Do not pass that blank filename to ShellExecuteEx: Windows shows its
+       own "file not found" dialog even though the component was disabled. */
+    if (leaf == end) return TRUE;
+    for (p = leaf; p < end; ++p) if (*p > L' ') return TRUE;
+    return FALSE;
+}
+
+static BOOL shell_target(LPCWSTR file, LPCWSTR args, LPCWSTR dir) {
+    LPCWSTR p;
+    if (!shell_name(file) || !local_path(file) || !local_path(dir) || remote(args)) return FALSE;
+    for(p=file;*p;++p) if(*p==L':' && p!=file+1 && !(p==file+5 && file[0]==L'\\' && file[1]==L'\\')) return FALSE;
+    if ((contains(file,L".com") || contains(file,L".cn") || contains(file,L".net") || contains(file,L".org")) && GetFileAttributesW(file)==INVALID_FILE_ATTRIBUTES) return FALSE;
+    /* Browser shortcuts can hide a URL outside the command line. */
+    if (contains(file, L".url") || contains(file, L".website") || contains(file, L".hta")) return FALSE;
+    return TRUE;
+}
+HINSTANCE WINAPI Guard_ShellExecuteW(HWND hwnd, LPCWSTR op, LPCWSTR file, LPCWSTR args, LPCWSTR dir, INT show) {
+    if (!shell_target(file, args, dir)) { SetLastError(ERROR_ACCESS_DENIED); return (HINSTANCE)SE_ERR_ACCESSDENIED; }
+    return ShellExecuteW(hwnd, op, file, args, dir, show);
+}
+HINSTANCE WINAPI Guard_ShellExecuteA(HWND hwnd, LPCSTR op, LPCSTR file, LPCSTR args, LPCSTR dir, INT show) {
+    WCHAR f[1024], a[1024], d[1024];
+    if (!wide(file,f,1024) || !wide(args,a,1024) || !wide(dir,d,1024) || !shell_target(f,a,d)) {
+        SetLastError(ERROR_ACCESS_DENIED); return (HINSTANCE)SE_ERR_ACCESSDENIED;
+    }
+    return ShellExecuteA(hwnd, op, file, args, dir, show);
+}
+BOOL WINAPI Guard_ShellExecuteExW(SHELLEXECUTEINFOW *info) {
+    WCHAR pidl_path[MAX_PATH]; LPCWSTR file=info ? info->lpFile : NULL;
+    if(info && (info->fMask & SEE_MASK_IDLIST)) {
+        if(!info->lpIDList || !SHGetPathFromIDListW((LPCITEMIDLIST)info->lpIDList,pidl_path)) file=NULL;
+        else file=pidl_path;
+    }
+    if (!info || !shell_target(file, info->lpParameters, info->lpDirectory)) {
+        if (info) { info->hInstApp=(HINSTANCE)SE_ERR_ACCESSDENIED; info->hProcess=NULL; }
+        SetLastError(ERROR_ACCESS_DENIED); return FALSE;
+    }
+    return ShellExecuteExW(info);
+}
+BOOL WINAPI Guard_ShellExecuteExA(SHELLEXECUTEINFOA *info) {
+    WCHAR f[1024], a[1024], d[1024];
+    BOOL file_ok=FALSE;
+    if(info) {
+        if(info->fMask & SEE_MASK_IDLIST) file_ok=info->lpIDList && SHGetPathFromIDListW((LPCITEMIDLIST)info->lpIDList,f);
+        else file_ok=wide(info->lpFile,f,1024);
+    }
+    if (!info || !file_ok ||
+        !wide(info->lpParameters,a,1024) || !wide(info->lpDirectory,d,1024) || !shell_target(f,a,d)) {
+        if (info) { info->hInstApp=(HINSTANCE)SE_ERR_ACCESSDENIED; info->hProcess=NULL; }
+        SetLastError(ERROR_ACCESS_DENIED); return FALSE;
+    }
+    return ShellExecuteExA(info);
+}
+
+/* A spawned child gets its own import table, so the guard cannot follow it.
+   Local helpers (the search engine, updaters) must still start; only targets
+   that can reach the network directly -- browsers and anything remote -- are
+   refused. This is a policy boundary, not a sandbox. */
+static BOOL spawn_target(LPCWSTR app, LPCWSTR cmd) {
+    LPCWSTR subject = app && *app ? app : cmd;
+    if (!subject || !*subject) return TRUE;
+    if (remote(subject)) return FALSE;
+    if (!local_path(subject)) return FALSE;
+    if (contains(subject, L"iexplore") || contains(subject, L"msedge") ||
+        contains(subject, L"chrome") || contains(subject, L"firefox") ||
+        contains(subject, L"browser") || contains(subject, L"opera") ||
+        contains(subject, L"webkit")) return FALSE;
+    return TRUE;
+}
+
+BOOL WINAPI Guard_CreateProcessW(LPCWSTR app, LPWSTR cmd, LPSECURITY_ATTRIBUTES pa,
+    LPSECURITY_ATTRIBUTES ta, BOOL inherit, DWORD flags, LPVOID env, LPCWSTR dir,
+    LPSTARTUPINFOW si, LPPROCESS_INFORMATION pi) {
+    (void)pa; (void)ta; (void)inherit; (void)flags; (void)env; (void)dir; (void)si; (void)pi;
+    if (!spawn_target(app, cmd)) { SetLastError(ERROR_ACCESS_DENIED); return FALSE; }
+    return CreateProcessW(app, cmd, pa, ta, inherit, flags, env, dir, si, pi);
+}
+BOOL WINAPI Guard_CreateProcessA(LPCSTR app, LPSTR cmd, LPSECURITY_ATTRIBUTES pa,
+    LPSECURITY_ATTRIBUTES ta, BOOL inherit, DWORD flags, LPVOID env, LPCSTR dir,
+    LPSTARTUPINFOA si, LPPROCESS_INFORMATION pi) {
+    WCHAR a[1024], c[1024];
+    (void)pa; (void)ta; (void)inherit; (void)flags; (void)env; (void)dir; (void)si; (void)pi;
+    if (!wide(app,a,1024) || !wide(cmd,c,1024) || !spawn_target(a,c)) {
+        SetLastError(ERROR_ACCESS_DENIED); return FALSE;
+    }
+    return CreateProcessA(app, cmd, pa, ta, inherit, flags, env, dir, si, pi);
+}
+UINT WINAPI Guard_WinExec(LPCSTR cmd, UINT show) {
+    WCHAR c[1024];
+    if (!wide(cmd,c,1024) || !spawn_target(c,c)) { SetLastError(ERROR_ACCESS_DENIED); return 0; }
+    return WinExec(cmd, show);
+}
+
+HANDLE WINAPI Guard_CreateFileW(LPCWSTR p,DWORD a,DWORD s,LPSECURITY_ATTRIBUTES sa,DWORD c,DWORD f,HANDLE t) {
+    if (!local_path(p)) { SetLastError(ERROR_ACCESS_DENIED); return INVALID_HANDLE_VALUE; }
+    return CreateFileW(p,a,s,sa,c,f,t);
+}
+HANDLE WINAPI Guard_CreateFileA(LPCSTR p,DWORD a,DWORD s,LPSECURITY_ATTRIBUTES sa,DWORD c,DWORD f,HANDLE t) {
+    if (!local_a(p)) { SetLastError(ERROR_ACCESS_DENIED); return INVALID_HANDLE_VALUE; }
+    return CreateFileA(p,a,s,sa,c,f,t);
+}
+DWORD WINAPI Guard_GetFileAttributesW(LPCWSTR p) {
+    if (!local_path(p)) { SetLastError(ERROR_ACCESS_DENIED); return INVALID_FILE_ATTRIBUTES; }
+    return GetFileAttributesW(p);
+}
+DWORD WINAPI Guard_GetFileAttributesA(LPCSTR p) {
+    if (!local_a(p)) { SetLastError(ERROR_ACCESS_DENIED); return INVALID_FILE_ATTRIBUTES; }
+    return GetFileAttributesA(p);
+}
+HANDLE WINAPI Guard_FindFirstFileW(LPCWSTR p,LPWIN32_FIND_DATAW d) {
+    if (!local_path(p)) { SetLastError(ERROR_ACCESS_DENIED); return INVALID_HANDLE_VALUE; }
+    return FindFirstFileW(p,d);
+}
+HANDLE WINAPI Guard_FindFirstFileA(LPCSTR p,LPWIN32_FIND_DATAA d) {
+    if (!local_a(p)) { SetLastError(ERROR_ACCESS_DENIED); return INVALID_HANDLE_VALUE; }
+    return FindFirstFileA(p,d);
+}
+HANDLE WINAPI Guard_FindFirstFileExW(LPCWSTR p,FINDEX_INFO_LEVELS l,LPVOID d,FINDEX_SEARCH_OPS o,LPVOID f,DWORD flags) {
+    if (!local_path(p)) { SetLastError(ERROR_ACCESS_DENIED); return INVALID_HANDLE_VALUE; }
+    return FindFirstFileExW(p,l,d,o,f,flags);
+}
+HANDLE WINAPI Guard_FindFirstFileExA(LPCSTR p,FINDEX_INFO_LEVELS l,LPVOID d,FINDEX_SEARCH_OPS o,LPVOID f,DWORD flags) {
+    if (!local_a(p)) { SetLastError(ERROR_ACCESS_DENIED); return INVALID_HANDLE_VALUE; }
+    return FindFirstFileExA(p,l,d,o,f,flags);
+}
+
+/* Deny in-process browser/HTTP COM activation. Local shell COM remains intact. */
+static BOOL network_class(REFCLSID cls) {
+    static const DWORD ids[] = {0x8856f961,0xeab22ac3,0x0002df01,0x0002df02,
+        0xf5078f35,0xf5078f1e,0x88d969c5,0x88d969c6,0x88d969d5,0x88d969d6,
+        0xafb40ffd,0x2087c2f4,0xfbf23b40};
+    unsigned i;
+    for(i=0;i<sizeof(ids)/sizeof(ids[0]);++i) if(cls->Data1==ids[i]) return TRUE;
+    return FALSE;
+}
+HRESULT WINAPI Guard_CoCreateInstance(REFCLSID cls,LPUNKNOWN outer,DWORD context,REFIID iid,LPVOID *out) {
+    if(network_class(cls)) { if(out)*out=NULL; return E_ACCESSDENIED; }
+    return CoCreateInstance(cls,outer,context,iid,out);
+}
+HRESULT WINAPI Guard_CoGetClassObject(REFCLSID cls,DWORD context,LPVOID reserved,REFIID iid,LPVOID *out) {
+    if(network_class(cls)) { if(out)*out=NULL; return E_ACCESSDENIED; }
+    return CoGetClassObject(cls,context,reserved,iid,out);
+}
+HRESULT WINAPI Guard_CLSIDFromProgID(LPCOLESTR name,LPCLSID cls) {
+    if(contains(name,L"xmlhttp") || contains(name,L"winhttp") || contains(name,L"internetexplorer") || contains(name,L"msxml")) return E_ACCESSDENIED;
+    return CLSIDFromProgID(name,cls);
+}
