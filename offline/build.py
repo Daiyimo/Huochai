@@ -32,6 +32,11 @@ GUARDS = {
     'CoGetClassObject':20,'CLSIDFromProgID':8,'CreateFileA':28,'CreateFileW':28,
     'GetFileAttributesA':4,'GetFileAttributesW':4,'FindFirstFileA':8,'FindFirstFileW':8,
     'FindFirstFileExA':24,'FindFirstFileExW':24,
+    # Keep application data portable. The original program asks Shell32 for
+    # AppData/LocalAppData and then appends its own HuoChat subdirectory.
+    'SHGetFolderPathW':20,'SHGetFolderPathA':20,
+    'SHGetSpecialFolderPathW':16,'SHGetSpecialFolderPathA':16,
+    'SHGetKnownFolderPath':16,
     # A child process owns its own import table, so only network-capable
     # targets are refused; local helpers must keep starting.
     'CreateProcessA':40,'CreateProcessW':40,'WinExec':8,
@@ -111,10 +116,36 @@ def resource_zip(data, pe):
             off=pe.get_offset_from_rva(res.OffsetToData)
             yield res, off, data[off:off+res.Size]
 
+# Disabled features still left bitmap/template debris in the embedded ZIPRES.
+# Keep this list exact and reviewable: weather 23, web suggestions 24, share 5,
+# navigation 3 and tic-tac-toe 2 (57 entries in total). add_nav.png is not a
+# visible feature switch: HuoChat unconditionally preloads it during startup
+# and crashes at HuoChat+0x1A4169 if it is physically absent.
+REMOVED_UI_RESOURCES = frozenset({
+    *(f'plugins/weather/{n}.png' for n in
+      ('1','2','3','4','5','6','7','8','9','10','11','12','13','14','15','16','17','18','19','20','21','22','99')),
+    *(f'setting/web_suggest/{n}' for n in (
+      'icon_360.png','icon_amazon.png','icon_baidu.png','icon_baike.png',
+      'icon_bdmap.png','icon_bilibili.png','icon_bing.png','icon_douban.png',
+      'icon_github.png','icon_google.png','icon_gt.png','icon_huaban.png',
+      'icon_iqiyi.png','icon_jd.png','icon_qqshipin.png','icon_sogou.png',
+      'icon_suning.png','icon_taobao.png','icon_tmall.png','icon_weixin.png',
+      'icon_youku.png','icon_zhihu.png','web_icon.png','web_icon_setting.png')),
+    *(f'plugins/share/{n}.png' for n in ('decrease','increase','name','price','volume')),
+    'nav_set_list_line.xml','icon/nav.png','plugins/icon_nav.png',
+    'plugins/ticractoe/circle.png','plugins/ticractoe/cross.png',
+})
+
 def clean_zip(blob):
-    out=io.BytesIO(); edits=[]
+    out=io.BytesIO(); edits=[]; removed=[]
     with zipfile.ZipFile(io.BytesIO(blob)) as old, zipfile.ZipFile(out,'w',zipfile.ZIP_DEFLATED,compresslevel=9) as new:
+        missing=REMOVED_UI_RESOURCES-set(old.namelist())
+        if missing:
+            raise ValueError('Expected removable UI resources missing: '+', '.join(sorted(missing)[:8]))
         for item in old.infolist():
+            if item.filename in REMOVED_UI_RESOURCES:
+                removed.append(item.filename)
+                continue
             payload=old.read(item)
             text=Path(item.filename).suffix.lower() in ('.xml','.html','.htm','.js','.css','.json','.txt')
             payload,found=scrub_urls(payload,fixed_size=not text,
@@ -124,7 +155,9 @@ def clean_zip(blob):
                 ET.fromstring(payload)
             item.date_time=(2026,8,31,0,0,0)
             new.writestr(item,payload,compress_type=zipfile.ZIP_DEFLATED,compresslevel=9)
-    return out.getvalue(),edits
+    if set(removed)!=REMOVED_UI_RESOURCES:
+        raise ValueError('UI resource removal set drifted')
+    return out.getvalue(),edits,sorted(removed)
 
 # Sister-product component names that HuoChat still tries to launch at runtime.
 # These are bare filenames (not URLs), so scrub_urls never matched them and the
@@ -209,12 +242,19 @@ def stub_component_names(path):
 
 def sanitize_pe(path, redirect=True):
     before=path.read_bytes(); data=bytearray(before); pe=pefile.PE(data=before)
-    changes={'file':path.name,'before_sha256':sha(before),'urls':[],'imports':[]}
+    changes={'file':path.name,'before_sha256':sha(before),'urls':[],'imports':[],'removed_ui_resources':[]}
     for res,off,blob in resource_zip(before,pe):
-        blob,edits=clean_zip(blob)
+        blob,edits,removed=clean_zip(blob)
         if len(blob)>res.Size: raise ValueError('ZIPRES exceeds original slot')
         data[off:off+res.Size]=blob.ljust(res.Size,b'\0')
+        # Resource readers use IMAGE_RESOURCE_DATA_ENTRY.Size. Once disabled
+        # assets make the ZIP more than 64 KiB smaller, leaving the old size
+        # puts the end-of-central-directory record outside zipfile's search
+        # window even though the bytes themselves are valid.
+        size_off=res.get_field_absolute_offset('Size')
+        data[size_off:size_off+4]=struct.pack('<I',len(blob))
         changes['urls'].extend(edits)
+        changes['removed_ui_resources'].extend(removed)
     for typ,rid,res in resources(pe):
         if typ.id==24:  # Manifest XML must not contain fixed-width NUL padding.
             off=pe.get_offset_from_rva(res.OffsetToData)
@@ -426,6 +466,8 @@ def verify(folder, require_guards=True, system32=None):
                 finally: pe.close()
         for _,_,blob in resource_zip(data,pe):
             with zipfile.ZipFile(io.BytesIO(blob)) as z:
+                stale=REMOVED_UI_RESOURCES & set(z.namelist())
+                if stale: failures.append(f'{rel}: stale disabled UI resources: {sorted(stale)[:8]}')
                 for item in z.infolist():
                     value=z.read(item)
                     if url_hits(value): failures.append(f'{rel}!{item.filename}: embedded URL')
@@ -433,10 +475,16 @@ def verify(folder, require_guards=True, system32=None):
         for typ,rid,res in resources(pe):
             if typ.id==24: ET.fromstring(pe.get_data(res.OffsetToData,res.Size).rstrip(b'\0 '))
         pe.close()
-    for forbidden in ('web','plugins','shot.dll','user data/config','user data/tam/config'):
+    for forbidden in ('web','plugins','shot.dll','user data/config','user data/tam/config',
+                      'HuoChat/user data/config','HuoChat/user data/tam/config'):
         if (folder/forbidden).exists(): failures.append('Forbidden opaque/network component: '+forbidden)
-    if (folder/'site.db').exists():
-        con=sqlite3.connect((folder/'site.db').resolve().as_uri()+'?mode=ro&immutable=1',uri=True)
+    data_root=folder/'HuoChat'
+    if (folder/'site.db').exists() or (folder/'user data').exists():
+        failures.append('Legacy payload data remains outside portable HuoChat directory')
+    if not (data_root/'site.db').exists() or not (data_root/'user data').is_dir():
+        failures.append('Portable HuoChat seed data is incomplete')
+    if (data_root/'site.db').exists():
+        con=sqlite3.connect((data_root/'site.db').resolve().as_uri()+'?mode=ro&immutable=1',uri=True)
         for table in ('bookmark','top_site'):
             if con.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0]: failures.append('Nonempty '+table)
         con.close()
@@ -445,16 +493,18 @@ def verify(folder, require_guards=True, system32=None):
         for key in ('check_for_updates_on_startup','beta_updates','http_server_enabled','etp_server_enabled','allow_http_server','allow_etp_server'):
             if not re.search(r'^'+key+r'=0\s*$',ini,re.M): failures.append('Unsafe setting '+key)
     if failures: raise ValueError('\n'.join(failures))
-    return {'pass':True,'file_count':len(files),'files':files,'checked':'ASCII/UTF16 URLs, nested ZIPRES, manifests, imports/exports, configs, stripped components'}
+    return {'pass':True,'file_count':len(files),'files':files,'checked':f'ASCII/UTF16 URLs, nested ZIPRES, {len(REMOVED_UI_RESOURCES)} removed UI resources, manifests, imports/exports, configs, stripped components'}
 
 def prepare(source, dest):
     dest.mkdir(parents=True)
-    allowed=['HuoChat.exe','hc_engine.exe','Everything32.dll','sqlite3.dll','msvcp120.dll','msvcr120.dll','Everything.ini','site.db','duilib license.txt','everything license.txt']
+    allowed=['HuoChat.exe','hc_engine.exe','Everything32.dll','sqlite3.dll','msvcp120.dll','msvcr120.dll','Everything.ini','duilib license.txt','everything license.txt']
     for name in allowed: shutil.copy2(source/name,dest/name)
+    data_root=dest/'HuoChat'; data_root.mkdir()
+    shutil.copy2(source/'site.db',data_root/'site.db')
     for name in ('resource','page'):
-        shutil.copytree(source/'user data'/name,dest/'user data'/name)
+        shutil.copytree(source/'user data'/name,data_root/'user data'/name)
     # Opaque user config is deliberately not shipped; defaults will be regenerated.
-    con=sqlite3.connect(dest/'site.db')
+    con=sqlite3.connect(data_root/'site.db')
     for table in ('bookmark','top_site'): con.execute(f'DELETE FROM {table}')
     con.commit(); con.execute('VACUUM'); con.close()
     ini=(dest/'Everything.ini').read_text(encoding='utf-8-sig')
@@ -478,8 +528,9 @@ def verify_windows_manifests(folder,build,variant):
 def package(folder, build, variant, compiler, icon):
     # Fresh, versioned application directory prevents loading legacy web/plugins/config.
     subdir='HuoChatOffline-v1-'+variant
-    # Index cache lives beside the exe, outside the payload folder, so the
-    # payload stays deletable while the cache survives.
+    # All persistent state stays under the versioned payload directory. The
+    # launcher and hcg.dll virtualise AppData for the child process, so NSIS no
+    # longer creates or replaces %LOCALAPPDATA%\HuoChat.
     indexdir='HuoChatIndex'
     script=f'''Unicode true
 Name "HuoChat Offline {variant}"
@@ -491,26 +542,11 @@ SetCompressor /SOLID /FINAL lzma
 SetCompressorDictSize 64
 Icon "{icon}"
 Section
- SetShellVarContext current
  SetOutPath "$EXEDIR\\{subdir}"
  File /r "{folder}\\*.*"
- ; Remove only an existing junction or empty directory, never user data recursively.
- nsExec::ExecToStack 'cmd /d /c if exist "$LOCALAPPDATA\\HuoChat" rmdir "$LOCALAPPDATA\\HuoChat"'
- Pop $0
- Pop $1
- IfFileExists "$LOCALAPPDATA\\HuoChat\\*.*" conflict 0
- nsExec::ExecToStack 'cmd /d /c mklink /J "$LOCALAPPDATA\\HuoChat" "$EXEDIR\\{subdir}"'
- Pop $0
- Pop $1
- StrCmp $0 0 launch conflict
- conflict:
- MessageBox MB_OK|MB_ICONSTOP "Existing LOCALAPPDATA HuoChat data could not be redirected. Nothing was deleted. Exit and back up/move it manually first."
- Abort
- launch:
- ; Keep the Everything index beside the exe so a later start reuses it instead
- ; of rescanning every volume. Rewritten on each launch, so moving the exe can
- ; never leave a stale db_location behind.
- CreateDirectory "$EXEDIR\\{indexdir}"
+ ; Reuse Everything.db after the first scan. Rewriting only the location keeps
+ ; a moved portable folder self-consistent; it does not erase or rebuild the DB.
+ CreateDirectory "$EXEDIR\\{subdir}\\{indexdir}"
  ClearErrors
  FileOpen $0 "$EXEDIR\\{subdir}\\Everything.ini" r
  IfErrors noini
@@ -524,7 +560,7 @@ Section
   FileWrite $1 "$2"
  Goto ini_loop
  ini_done:
-  FileWrite $1 "db_location=$EXEDIR\\{indexdir}$\\r$\\n"
+  FileWrite $1 "db_location=$EXEDIR\\{subdir}\\{indexdir}$\\r$\\n"
   FileClose $0
   FileClose $1
   Delete "$EXEDIR\\{subdir}\\Everything.ini"
@@ -533,6 +569,11 @@ Section
  Exec '"$EXEDIR\\{subdir}\\HuoChat_launcher.exe"'
 SectionEnd
 '''
+    for forbidden in ('LOCALAPPDATA','mklink /J','nsExec::'):
+        if forbidden in script:
+            raise ValueError('Non-portable installer command returned: '+forbidden)
+    if f'db_location=$EXEDIR\\{subdir}\\{indexdir}' not in script:
+        raise ValueError('Everything index is not inside the payload directory')
     nsi=build/(variant+'.nsi'); nsi.write_text(script,encoding='utf-8-sig')
     run([compiler,'/V2',nsi])
     exe=build/(variant+'.exe')
@@ -551,6 +592,7 @@ SectionEnd
 def main():
     ap=argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--publish',action='store_true',help='Replace both root packages only after final verification')
+    ap.add_argument('--publish-single',action='store_true',help='Replace only the root single-file package after both candidates verify')
     ap.add_argument('--verify',type=Path,help='Check an already extracted payload; never launches it')
     args=ap.parse_args()
     if args.verify:
@@ -589,7 +631,14 @@ def main():
     run(['cl.exe','/nologo','/MT','/O1',ROOT/'offline'/'test_manifests.c','/link','kernel32.lib','/OUT:test_manifests.exe'],cwd=build,env=env)
     print(run([build/'test_guards.exe'],cwd=build).decode('utf-8','replace'),flush=True)
     print(run([build/'test shell targets.exe'],cwd=build).decode('utf-8','replace'),flush=True)
-    report={'source_revision':SOURCE_REV,'original_targets_executed':False,'guard_harness_executed':True,'shell_target_harness_executed':True,'variants':{}}
+    publication=list(SOURCES) if args.publish else ['single'] if args.publish_single else []
+    report={'source_revision':SOURCE_REV,'published_variants':publication,
+            'original_targets_executed':False,
+            'guard_harness_executed':True,'shell_target_harness_executed':True,
+            'portable_layout':{'system_localappdata_junction':False,
+                'index':'HuoChatOffline-v1-<variant>/HuoChatIndex',
+                'user_data':'HuoChatOffline-v1-<variant>/HuoChat'},
+            'removed_ui_resource_count':len(REMOVED_UI_RESOURCES),'variants':{}}
     for variant,folder in folders.items():
         edits=[]
         for p in pe_files(folder): edits.append(sanitize_pe(p))
@@ -609,20 +658,29 @@ def main():
         final=next(extracted.rglob('HuoChat.exe')).parent
         after=verify(final)
         if before['files']!=after['files']: raise ValueError('Packaged payload changed')
-        # Check NSIS plugin separately; it is compiler-supplied, not application payload.
+        if any(p.name.lower()=='nsexec.dll' for p in extracted.rglob('*')):
+            raise ValueError('Final package still carries the obsolete nsExec junction helper')
         for p in extracted.rglob('*'):
             if p.is_file() and url_hits(p.read_bytes()): raise ValueError('URL in final archive member '+str(p))
         report['variants'][variant]={'archive':str(exe),'sha256':sha(exe.read_bytes()),'size':exe.stat().st_size,'verification':after,'changes':edits}
         print(variant+': final package verified',flush=True)
+    report['root_artifacts']={variant:{
+        'path':SOURCES[variant][0],
+        'size':report['variants'][variant]['size'],
+        'sha256':report['variants'][variant]['sha256']}
+        for variant in publication}
     (build/'verification.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
     # No publication happens before BOTH final packages pass.
-    if args.publish:
-        for variant,(filename,_) in SOURCES.items():
+    if args.publish or args.publish_single:
+        publish_variants=list(SOURCES) if args.publish else ['single']
+        for variant in publish_variants:
+            filename,_=SOURCES[variant]
             backup=build/(variant+'-previous-root.exe'); shutil.copy2(ROOT/filename,backup)
-        for variant,(filename,_) in SOURCES.items():
+        for variant in publish_variants:
+            filename,_=SOURCES[variant]
             temporary=ROOT/(filename+'.new'); shutil.copy2(build/(variant+'.exe'),temporary); os.replace(temporary,ROOT/filename)
         shutil.copy2(build/'verification.json',ROOT/'offline'/'verification.json')
-        print('Published both verified packages.',flush=True)
+        print('Published verified package(s): '+', '.join(publish_variants),flush=True)
     print('Evidence:',build/'verification.json',flush=True)
 
 if __name__=='__main__':

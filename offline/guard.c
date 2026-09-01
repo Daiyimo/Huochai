@@ -84,6 +84,80 @@ static HMODULE net_stub(void) {
     return LoadLibraryExW(path, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
 }
 
+/* Return the directory containing hcg.dll. HuoChat appends its own "HuoChat"
+   component, so all per-user data lands under the portable payload directory
+   without creating %LOCALAPPDATA%\HuoChat or a junction. */
+static BOOL portable_dir_w(WCHAR *out, DWORD count) {
+    DWORD n;
+    if (!out || count < 4) return FALSE;
+    n = GetModuleFileNameW(self_module, out, count);
+    if (!n || n >= count) return FALSE;
+    while (n && out[n-1] != L'\\' && out[n-1] != L'/') --n;
+    if (!n) return FALSE;
+    if (n > 3) out[n-1] = 0; /* Preserve C:\ if ever placed at a drive root. */
+    else out[n] = 0;
+    return TRUE;
+}
+static BOOL portable_dir_a(CHAR *out, DWORD count) {
+    WCHAR path[MAX_PATH];
+    return portable_dir_w(path, MAX_PATH) &&
+        WideCharToMultiByte(CP_ACP, 0, path, -1, out, count, NULL, NULL) != 0;
+}
+static BOOL portable_csidl(int csidl) {
+    int folder = csidl & 0xff;
+    return folder == CSIDL_LOCAL_APPDATA || folder == CSIDL_APPDATA;
+}
+static BOOL same_guid(REFKNOWNFOLDERID a, const GUID *b) {
+    unsigned i;
+    if (!a || a->Data1 != b->Data1 || a->Data2 != b->Data2 || a->Data3 != b->Data3)
+        return FALSE;
+    for (i=0; i<8; ++i) if (a->Data4[i] != b->Data4[i]) return FALSE;
+    return TRUE;
+}
+static BOOL portable_known_folder(REFKNOWNFOLDERID id) {
+    static const GUID local = {0xf1b32785,0x6fba,0x4fcf,{0x9d,0x55,0x7b,0x8e,0x7f,0x15,0x70,0x91}};
+    static const GUID roaming = {0x3eb685db,0x65f9,0x4cf6,{0xa0,0x3a,0xe3,0xef,0x65,0x72,0x9f,0x3d}};
+    return same_guid(id,&local) || same_guid(id,&roaming);
+}
+
+HRESULT WINAPI Guard_SHGetFolderPathW(HWND hwnd,int csidl,HANDLE token,DWORD flags,LPWSTR path) {
+    if (portable_csidl(csidl))
+        return portable_dir_w(path,MAX_PATH) ? S_OK : E_FAIL;
+    return SHGetFolderPathW(hwnd,csidl,token,flags,path);
+}
+HRESULT WINAPI Guard_SHGetFolderPathA(HWND hwnd,int csidl,HANDLE token,DWORD flags,LPSTR path) {
+    if (portable_csidl(csidl))
+        return portable_dir_a(path,MAX_PATH) ? S_OK : E_FAIL;
+    return SHGetFolderPathA(hwnd,csidl,token,flags,path);
+}
+BOOL WINAPI Guard_SHGetSpecialFolderPathW(HWND hwnd,LPWSTR path,int csidl,BOOL create) {
+    if (portable_csidl(csidl)) {
+        BOOL ok=portable_dir_w(path,MAX_PATH);
+        if (ok && create) CreateDirectoryW(path,NULL);
+        return ok;
+    }
+    return SHGetSpecialFolderPathW(hwnd,path,csidl,create);
+}
+BOOL WINAPI Guard_SHGetSpecialFolderPathA(HWND hwnd,LPSTR path,int csidl,BOOL create) {
+    if (portable_csidl(csidl)) {
+        BOOL ok=portable_dir_a(path,MAX_PATH);
+        if (ok && create) CreateDirectoryA(path,NULL);
+        return ok;
+    }
+    return SHGetSpecialFolderPathA(hwnd,path,csidl,create);
+}
+HRESULT WINAPI Guard_SHGetKnownFolderPath(REFKNOWNFOLDERID id,DWORD flags,HANDLE token,PWSTR *path) {
+    WCHAR local[MAX_PATH]; SIZE_T bytes; PWSTR copy;
+    (void)flags; (void)token;
+    if (!portable_known_folder(id)) return SHGetKnownFolderPath(id,flags,token,path);
+    if (!path || !portable_dir_w(local,MAX_PATH)) return E_FAIL;
+    bytes=((SIZE_T)lstrlenW(local)+1)*sizeof(WCHAR);
+    copy=(PWSTR)CoTaskMemAlloc(bytes);
+    if (!copy) { *path=NULL; return E_OUTOFMEMORY; }
+    CopyMemory(copy,local,bytes); *path=copy;
+    return S_OK;
+}
+
 HMODULE WINAPI Guard_LoadLibraryExW(LPCWSTR name, HANDLE file, DWORD flags) {
     if (!local_path(name)) { SetLastError(ERROR_ACCESS_DENIED); return NULL; }
     /* Missing optional web components must remain missing; a fake handle would
@@ -118,10 +192,13 @@ FARPROC WINAPI Guard_GetProcAddress(HMODULE module, LPCSTR name) {
             lstrcmpA(name, "ShellExecuteW") == 0 || lstrcmpA(name, "ShellExecuteExW") == 0 ||
             lstrcmpA(name, "ShellExecuteExA") == 0 || lstrcmpA(name, "CoCreateInstance") == 0 ||
             lstrcmpA(name, "CoGetClassObject") == 0 || lstrcmpA(name, "CLSIDFromProgID") == 0 ||
-            lstrcmpA(name, "CreateFileA") == 0 || lstrcmpA(name, "CreateFileW") == 0 ||
-            lstrcmpA(name, "GetFileAttributesA") == 0 || lstrcmpA(name, "GetFileAttributesW") == 0 ||
-            lstrcmpA(name, "FindFirstFileA") == 0 || lstrcmpA(name, "FindFirstFileW") == 0 ||
-            lstrcmpA(name, "FindFirstFileExA") == 0 || lstrcmpA(name, "FindFirstFileExW") == 0) {
+             lstrcmpA(name, "CreateFileA") == 0 || lstrcmpA(name, "CreateFileW") == 0 ||
+             lstrcmpA(name, "GetFileAttributesA") == 0 || lstrcmpA(name, "GetFileAttributesW") == 0 ||
+             lstrcmpA(name, "FindFirstFileA") == 0 || lstrcmpA(name, "FindFirstFileW") == 0 ||
+             lstrcmpA(name, "FindFirstFileExA") == 0 || lstrcmpA(name, "FindFirstFileExW") == 0 ||
+             lstrcmpA(name, "SHGetFolderPathA") == 0 || lstrcmpA(name, "SHGetFolderPathW") == 0 ||
+             lstrcmpA(name, "SHGetSpecialFolderPathA") == 0 || lstrcmpA(name, "SHGetSpecialFolderPathW") == 0 ||
+             lstrcmpA(name, "SHGetKnownFolderPath") == 0) {
             proc = GetProcAddress(guard, name);
             if (!proc) SetLastError(ERROR_PROC_NOT_FOUND);
             return proc;
