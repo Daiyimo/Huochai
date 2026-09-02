@@ -43,7 +43,7 @@ int main(void) {
     CHECK(SUCCEEDED(folder(NULL,CSIDL_LOCAL_APPDATA,NULL,0,portable)));
     n=GetModuleFileNameW(guard,expected,MAX_PATH); CHECK(n && n<MAX_PATH);
     while(n && expected[n-1]!=L'\\') --n;
-    if(n>3) expected[n-1]=0; else expected[n]=0;
+    expected[n]=0; lstrcatW(expected,L"Data");
     CHECK(lstrcmpiW(portable,expected)==0);
     CHECK(load(L"\\\\example.invalid\\share\\x.dll")==NULL);
     CHECK(shell(NULL,L"open",L"https://example.invalid/",NULL,NULL,0)==(HINSTANCE)5);

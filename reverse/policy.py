@@ -9,7 +9,7 @@ NETWORK_DLLS = {
     'schannel.dll', 'secur32.dll', 'ncrypt.dll', 'davclnt.dll',
     'nlaapi.dll', 'netiohlp.dll', 'wsnmp32.dll', 'winrnr.dll',
 }
-GUARDED_DLLS = {'kernel32.dll', 'shell32.dll', 'ole32.dll'}
+GUARDED_DLLS = {'kernel32.dll', 'shell32.dll', 'ole32.dll', 'advapi32.dll', 'shlwapi.dll'}
 # Refused at load time rather than stubbed, so legacy code cannot call absent
 # wke/COM exports through a fake handle.
 INTENTIONALLY_ABSENT = {'node.dll', 'mshtml.dll', 'msxml.dll', 'ieframe.dll'}
