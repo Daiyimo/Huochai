@@ -1,11 +1,14 @@
-/* Local-only API guards. Built without a C runtime. Never contacts a network. */
+/* Local-only API guards. Never contacts a network. */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <shellapi.h>
 #include <shlobj.h>
 #include <objbase.h>
+#include <shlwapi.h>
+#include "startup.h"
 
 static HMODULE self_module;
+#include "engine_entry.h"
 
 BOOL WINAPI DllMain(HINSTANCE module, DWORD reason, LPVOID reserved) {
     (void)reserved;
@@ -84,9 +87,8 @@ static HMODULE net_stub(void) {
     return LoadLibraryExW(path, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
 }
 
-/* Return the directory containing hcg.dll. HuoChat appends its own "HuoChat"
-   component, so all per-user data lands under the portable payload directory
-   without creating %LOCALAPPDATA%\HuoChat or a junction. */
+/* The application resolves known AppData folders to Data. External programs
+   inherit Data\\Apps through the launcher's process environment. */
 static BOOL portable_dir_w(WCHAR *out, DWORD count) {
     DWORD n;
     if (!out || count < 4) return FALSE;
@@ -94,9 +96,8 @@ static BOOL portable_dir_w(WCHAR *out, DWORD count) {
     if (!n || n >= count) return FALSE;
     while (n && out[n-1] != L'\\' && out[n-1] != L'/') --n;
     if (!n) return FALSE;
-    if (n > 3) out[n-1] = 0; /* Preserve C:\ if ever placed at a drive root. */
-    else out[n] = 0;
-    return TRUE;
+    out[n] = 0;
+    return SUCCEEDED(StringCchCatW(out,count,L"Data"));
 }
 static BOOL portable_dir_a(CHAR *out, DWORD count) {
     WCHAR path[MAX_PATH];
@@ -198,7 +199,11 @@ FARPROC WINAPI Guard_GetProcAddress(HMODULE module, LPCSTR name) {
              lstrcmpA(name, "FindFirstFileExA") == 0 || lstrcmpA(name, "FindFirstFileExW") == 0 ||
              lstrcmpA(name, "SHGetFolderPathA") == 0 || lstrcmpA(name, "SHGetFolderPathW") == 0 ||
              lstrcmpA(name, "SHGetSpecialFolderPathA") == 0 || lstrcmpA(name, "SHGetSpecialFolderPathW") == 0 ||
-             lstrcmpA(name, "SHGetKnownFolderPath") == 0) {
+             lstrcmpA(name, "SHGetKnownFolderPath") == 0 ||
+             lstrcmpA(name, "RegSetValueExW") == 0 || lstrcmpA(name, "RegSetValueExA") == 0 ||
+             lstrcmpA(name, "SHSetValueW") == 0 || lstrcmpA(name, "SHSetValueA") == 0 ||
+             lstrcmpA(name, "GetCommandLineW") == 0 || lstrcmpA(name, "GetCommandLineA") == 0 ||
+             lstrcmpA(name, "Shell_NotifyIconW") == 0 || lstrcmpA(name, "Shell_NotifyIconA") == 0) {
             proc = GetProcAddress(guard, name);
             if (!proc) SetLastError(ERROR_PROC_NOT_FOUND);
             return proc;
@@ -313,6 +318,53 @@ UINT WINAPI Guard_WinExec(LPCSTR cmd, UINT show) {
     WCHAR c[1024];
     if (!wide(cmd,c,1024) || !spawn_target(c,c)) { SetLastError(ERROR_ACCESS_DENIED); return 0; }
     return WinExec(cmd, show);
+}
+
+LSTATUS WINAPI Guard_RegSetValueExW(HKEY key,LPCWSTR name,DWORD reserved,DWORD type,const BYTE *data,DWORD bytes) {
+    WCHAR dir[STARTUP_CAP],command[STARTUP_CAP],value[STARTUP_CAP]={0}; DWORD n;
+    if(name && !lstrcmpiW(name,L"HuoChat") && type==REG_SZ && data && bytes>=2 && bytes%2==0 &&
+       bytes<sizeof(value) && IsStartupKey(key)) {
+        CopyMemory(value,data,bytes); /* The original SHSetValueW omits the NUL. */
+        n=GetModuleFileNameW(self_module,dir,STARTUP_CAP);
+        if(!n || n>=STARTUP_CAP) return ERROR_BUFFER_OVERFLOW;
+        while(n && dir[n-1]!=L'\\') n--; dir[n]=0;
+        if(IsOwnStartup(value,dir,NULL)) {
+            if(!StartupCommand(dir,command)) return ERROR_BUFFER_OVERFLOW;
+            return RegSetValueExW(key,name,reserved,REG_SZ,(const BYTE*)command,((DWORD)wcslen(command)+1)*2);
+        }
+    }
+    return RegSetValueExW(key,name,reserved,type,data,bytes);
+}
+LSTATUS WINAPI Guard_RegSetValueExA(HKEY key,LPCSTR name,DWORD reserved,DWORD type,const BYTE *data,DWORD bytes) {
+    WCHAR wide_name[STARTUP_CAP],value[STARTUP_CAP]={0};
+    if(name && !lstrcmpiA(name,"HuoChat") && type==REG_SZ && data && bytes && bytes<STARTUP_CAP && IsStartupKey(key)) {
+        if(!wide(name,wide_name,STARTUP_CAP) || !MultiByteToWideChar(CP_ACP,0,(LPCSTR)data,bytes,value,STARTUP_CAP-1)) return ERROR_NO_UNICODE_TRANSLATION;
+        return Guard_RegSetValueExW(key,wide_name,reserved,type,(const BYTE*)value,((DWORD)wcslen(value)+1)*2);
+    }
+    return RegSetValueExA(key,name,reserved,type,data,bytes);
+}
+
+LSTATUS WINAPI Guard_SHSetValueW(HKEY key,LPCWSTR subkey,LPCWSTR name,DWORD type,const void *data,DWORD bytes) {
+    HKEY target=key; LONG result;
+    if(!name || lstrcmpiW(name,L"HuoChat") || type!=REG_SZ) return SHSetValueW(key,subkey,name,type,data,bytes);
+    if(subkey && *subkey) {
+        result=RegCreateKeyExW(key,subkey,0,NULL,0,KEY_SET_VALUE,NULL,&target,NULL);
+        if(result!=ERROR_SUCCESS) return result;
+    }
+    result=Guard_RegSetValueExW(target,name,0,type,(const BYTE*)data,bytes);
+    if(target!=key) RegCloseKey(target);
+    return result;
+}
+LSTATUS WINAPI Guard_SHSetValueA(HKEY key,LPCSTR subkey,LPCSTR name,DWORD type,const void *data,DWORD bytes) {
+    HKEY target=key; LONG result;
+    if(!name || lstrcmpiA(name,"HuoChat") || type!=REG_SZ) return SHSetValueA(key,subkey,name,type,data,bytes);
+    if(subkey && *subkey) {
+        result=RegCreateKeyExA(key,subkey,0,NULL,0,KEY_SET_VALUE,NULL,&target,NULL);
+        if(result!=ERROR_SUCCESS) return result;
+    }
+    result=Guard_RegSetValueExA(target,name,0,type,(const BYTE*)data,bytes);
+    if(target!=key) RegCloseKey(target);
+    return result;
 }
 
 HANDLE WINAPI Guard_CreateFileW(LPCWSTR p,DWORD a,DWORD s,LPSECURITY_ATTRIBUTES sa,DWORD c,DWORD f,HANDLE t) {

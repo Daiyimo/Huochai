@@ -1,4 +1,4 @@
-"""Build and verify the maintained offline single-file package without running it."""
+"""Build and verify the offline package, including an isolated background engine."""
 import atexit
 from pathlib import Path
 import argparse
@@ -18,6 +18,11 @@ import zipfile
 import zlib
 import xml.etree.ElementTree as ET
 import pefile
+from PIL import Image
+from guide_cards import offline_guide
+from data_layout import relocate_data_paths
+from settings_patch import disable_settings_webview,save_before_shutdown
+from navigation_layout import clean_navigation_layout
 from policy import (INTENTIONALLY_ABSENT, NETWORK_APIS, NETWORK_DLLS, GUARDED_DLLS,
                     scrub_urls, url_hits)
 
@@ -43,6 +48,10 @@ GUARDS = {
     # A child process owns its own import table, so only network-capable
     # targets are refused; local helpers must keep starting.
     'CreateProcessA':40,'CreateProcessW':40,'WinExec':8,
+    'RegSetValueExW':24, 'RegSetValueExA':24,
+    'SHSetValueW':24, 'SHSetValueA':24,
+    'GetCommandLineW':0, 'GetCommandLineA':0,
+    'Shell_NotifyIconW':8, 'Shell_NotifyIconA':8,
 }
 
 def check_policy_parity():
@@ -82,6 +91,9 @@ def run(args, **kwargs):
 
 def cleanup_build_dir(path):
     """Remove a Windows build tree after child processes release their handles."""
+    path=Path(path).resolve()
+    if path.parent!=Path(tempfile.gettempdir()).resolve() or not path.name.startswith('huochai_offline_build_'):
+        raise ValueError('Refusing to clean a directory outside the allocated build workspace')
     for attempt in range(20):
         try:
             shutil.rmtree(path)
@@ -154,6 +166,25 @@ REMOVED_UI_RESOURCES = frozenset({
     'plugins/ticractoe/circle.png','plugins/ticractoe/cross.png',
 })
 
+GUIDE_GIFS = frozenset(f'guide/guid5_{n}.gif' for n in (1, 2, 3))
+
+
+def compact_guide_gif(payload, name=None):
+    """Keep the final, complete demonstration frame and its original canvas."""
+    with Image.open(io.BytesIO(payload)) as source:
+        if source.format != 'GIF' or source.size != (1000, 600):
+            raise ValueError('Unexpected guide animation format or dimensions')
+        if name in ('guide/guid5_2.gif','guide/guid5_3.gif'):
+            return offline_guide(int(name[-5]))
+        source.seek(source.n_frames - 1)
+        frame = source.convert('RGB').quantize(colors=128)
+        out = io.BytesIO()
+        frame.save(out, format='GIF', optimize=True)
+    if len(out.getvalue()) >= len(payload):
+        raise ValueError('Guide compaction did not reduce its size')
+    return out.getvalue()
+
+
 def clean_zip(blob):
     out=io.BytesIO(); edits=[]; removed=[]
     with zipfile.ZipFile(io.BytesIO(blob)) as old, zipfile.ZipFile(out,'w',zipfile.ZIP_DEFLATED,compresslevel=9) as new:
@@ -165,6 +196,8 @@ def clean_zip(blob):
                 removed.append(item.filename)
                 continue
             payload=old.read(item)
+            if item.filename in GUIDE_GIFS:
+                payload=compact_guide_gif(payload,item.filename)
             text=Path(item.filename).suffix.lower() in ('.xml','.html','.htm','.js','.css','.json','.txt')
             payload,found=scrub_urls(payload,fixed_size=not text,
                                      only={h['offset'] for h in url_hits(payload)})
@@ -382,11 +415,12 @@ def compile_guards(build,folders,env):
         target=f'_Guard_{name}@{GUARDS[name]}' if name in GUARDS else forwards[name]
         definitions.append(f'  {name}={target}')
     for ordinal,target in sorted(ordinals.items()):
-        known={'shell32.#16':'shell32.ILFindLastID','shell32.#155':'shell32.ILFree','shell32.#190':'shell32.ILCreateFromPathW'}
+        known={'shell32.#16':'shell32.ILFindLastID','shell32.#155':'shell32.ILFree','shell32.#190':'shell32.ILCreateFromPathW',
+               'shlwapi.#487':'shlwapi.SHLoadIndirectString'}
         if target not in known: raise ValueError('Unreviewed ordinal forwarder '+target)
         definitions.append(f'  Ordinal{ordinal}={known[target]} @{ordinal} NONAME')
     (build/'guard.def').write_text('\n'.join(definitions),encoding='utf-8')
-    run(['cl.exe','/nologo','/LD','/MT','/O1','/W3',SOURCE_DIR/'guard.c','/link','kernel32.lib','shell32.lib','ole32.lib','/DEF:guard.def','/OUT:hcg.dll','/DYNAMICBASE','/NXCOMPAT'],cwd=build,env=env)
+    run(['cl.exe','/nologo','/utf-8','/LD','/MT','/O1','/W3',SOURCE_DIR/'guard.c','/link','kernel32.lib','shell32.lib','shlwapi.lib','ole32.lib','advapi32.lib','/DEF:guard.def','/OUT:hcg.dll','/DYNAMICBASE','/NXCOMPAT'],cwd=build,env=env)
     for name in ('hcn.dll','hcg.dll'): sanitize_pe(build/name,redirect=False)
     # Exercise every generated deny export with its actual stdcall arity. This
     # catches stack/pop mistakes without loading any original application code.
@@ -486,8 +520,13 @@ def verify(folder, require_guards=True, system32=None):
             with zipfile.ZipFile(io.BytesIO(blob)) as z:
                 stale=REMOVED_UI_RESOURCES & set(z.namelist())
                 if stale: failures.append(f'{rel}: stale disabled UI resources: {sorted(stale)[:8]}')
+                if GUIDE_GIFS - set(z.namelist()): failures.append(f'{rel}: guide resources missing')
                 for item in z.infolist():
                     value=z.read(item)
+                    if item.filename in GUIDE_GIFS:
+                        with Image.open(io.BytesIO(value)) as guide:
+                            if guide.format != 'GIF' or guide.size != (1000, 600) or guide.n_frames != 1:
+                                failures.append(f'{rel}: invalid compact guide {item.filename}')
                     if url_hits(value): failures.append(f'{rel}!{item.filename}: embedded URL')
                     if item.filename.lower().endswith('.xml'): ET.fromstring(value)
         for typ,rid,res in resources(pe):
@@ -496,33 +535,36 @@ def verify(folder, require_guards=True, system32=None):
     for forbidden in ('web','plugins','shot.dll','user data/config','user data/tam/config',
                       'HuoChat/user data/config','HuoChat/user data/tam/config'):
         if (folder/forbidden).exists(): failures.append('Forbidden opaque/network component: '+forbidden)
-    data_root=folder/'HuoChat'
-    if (folder/'site.db').exists() or (folder/'user data').exists():
-        failures.append('Legacy payload data remains outside portable HuoChat directory')
-    if not (data_root/'site.db').exists() or not (data_root/'user data').is_dir():
+    data_root=folder/'Data'
+    if any((folder/name).exists() for name in ('site.db','user data','HuoChat','Everything.ini')):
+        failures.append('Legacy seed data remains outside Data')
+    if not (data_root/'Sites.db').exists() or not (data_root/'HuoChat'/'user data'/'resource').is_dir():
         failures.append('Portable HuoChat seed data is incomplete')
-    if (data_root/'site.db').exists():
-        con=sqlite3.connect((data_root/'site.db').resolve().as_uri()+'?mode=ro&immutable=1',uri=True)
+    if (data_root/'Sites.db').exists():
+        con=sqlite3.connect((data_root/'Sites.db').resolve().as_uri()+'?mode=ro&immutable=1',uri=True)
         for table in ('bookmark','top_site'):
             if con.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0]: failures.append('Nonempty '+table)
         con.close()
-    if (folder/'Everything.ini').exists():
-        ini=(folder/'Everything.ini').read_text(encoding='utf-8-sig')
+    if (data_root/'Index.ini').exists():
+        ini=(data_root/'Index.ini').read_text(encoding='utf-8-sig')
         for key in ('check_for_updates_on_startup','beta_updates','http_server_enabled','etp_server_enabled','allow_http_server','allow_etp_server'):
             if not re.search(r'^'+key+r'=0\s*$',ini,re.M): failures.append('Unsafe setting '+key)
     if failures: raise ValueError('\n'.join(failures))
-    return {'pass':True,'file_count':len(files),'files':files,'checked':f'ASCII/UTF16 URLs, nested ZIPRES, {len(REMOVED_UI_RESOURCES)} removed UI resources, manifests, imports/exports, configs, stripped components'}
+    return {'pass':True,'file_count':len(files),'files':files,'checked':f'ASCII/UTF16 URLs, nested ZIPRES, 3 compact guides, {len(REMOVED_UI_RESOURCES)} removed UI resources, manifests, imports/exports, configs, stripped components'}
 
 def prepare(source, dest):
     dest.mkdir(parents=True)
     allowed=['HuoChat.exe','hc_engine.exe','Everything32.dll','sqlite3.dll','msvcp120.dll','msvcr120.dll','Everything.ini','duilib license.txt','everything license.txt']
     for name in allowed: shutil.copy2(source/name,dest/name)
-    data_root=dest/'HuoChat'; data_root.mkdir()
-    shutil.copy2(source/'site.db',data_root/'site.db')
-    for name in ('resource','page'):
-        shutil.copytree(source/'user data'/name,data_root/'user data'/name)
+    data_root=dest/'Data'; data_root.mkdir()
+    shutil.copy2(source/'site.db',data_root/'Sites.db')
+    # Keep local note backgrounds and the default skin. The removed web engine's
+    # error HTML/JPEG are no longer useful and are omitted from new installs.
+    shutil.copytree(source/'user data'/'resource',data_root/'HuoChat'/'user data'/'resource')
+    navigation=data_root/'User'/'tam';navigation.mkdir(parents=True)
+    (navigation/'config').write_bytes(clean_navigation_layout((source/'user data'/'tam'/'config').read_bytes()))
     # Opaque user config is deliberately not shipped; defaults will be regenerated.
-    con=sqlite3.connect(data_root/'site.db')
+    con=sqlite3.connect(data_root/'Sites.db')
     for table in ('bookmark','top_site'): con.execute(f'DELETE FROM {table}')
     con.commit(); con.execute('VACUUM'); con.close()
     ini=(dest/'Everything.ini').read_text(encoding='utf-8-sig')
@@ -530,7 +572,8 @@ def prepare(source, dest):
         ini=re.sub(r'^'+key+r'=.*$',key+'=0',ini,flags=re.M) if re.search(r'^'+key+'=',ini,re.M) else ini+'\n'+key+'=0\n'
     for key in ('index_etp_server','connect_history_hosts','connect_history_ports','connect_history_usernames','folders','filelists'):
         ini=re.sub(r'^'+key+r'=.*$',key+'=',ini,flags=re.M)
-    (dest/'Everything.ini').write_text(ini,encoding='utf-8')
+    (data_root/'Index.ini').write_text(ini,encoding='utf-8')
+    (dest/'Everything.ini').unlink()
 
 def verify_windows_manifests(folder,build,variant):
     paths=[]; directory=build/(variant+'-manifests'); directory.mkdir()
@@ -543,55 +586,46 @@ def verify_windows_manifests(folder,build,variant):
         pe.close()
     print(run([build/'test_manifests.exe',*paths],cwd=build).decode('utf-8','replace'),flush=True)
 
-def package(folder, build, variant, compiler, icon):
-    # Fresh, versioned application directory prevents loading legacy web/plugins/config.
-    subdir='HuoChatOffline-v1-'+variant
-    # All persistent state stays under the versioned payload directory. The
-    # launcher and hcg.dll virtualise AppData for the child process, so NSIS no
-    # longer creates or replaces %LOCALAPPDATA%\HuoChat.
-    indexdir='HuoChatIndex'
-    script=f'''Unicode true
-Name "HuoChat Offline {variant}"
-OutFile "{build / (variant+'.exe')}"
-RequestExecutionLevel user
-SilentInstall silent
-AutoCloseWindow true
-SetCompressor /SOLID /FINAL lzma
-SetCompressorDictSize 64
-Icon "{icon}"
-Section
- SetOutPath "$EXEDIR\\{subdir}"
- File /r "{folder}\\*.*"
- ; Reuse Everything.db after the first scan. Rewriting only the location keeps
- ; a moved portable folder self-consistent; it does not erase or rebuild the DB.
- CreateDirectory "$EXEDIR\\{subdir}\\{indexdir}"
- ClearErrors
- FileOpen $0 "$EXEDIR\\{subdir}\\Everything.ini" r
- IfErrors noini
- GetTempFileName $R0
- FileOpen $1 "$R0" w
- ini_loop:
-  FileRead $0 $2
-  IfErrors ini_done
-  StrCpy $3 $2 11
-  StrCmp $3 "db_location=" ini_loop
-  FileWrite $1 "$2"
- Goto ini_loop
- ini_done:
-  FileWrite $1 "db_location=$EXEDIR\\{subdir}\\{indexdir}$\\r$\\n"
-  FileClose $0
-  FileClose $1
-  Delete "$EXEDIR\\{subdir}\\Everything.ini"
-  Rename "$R0" "$EXEDIR\\{subdir}\\Everything.ini"
- noini:
- Exec '"$EXEDIR\\{subdir}\\HuoChat_launcher.exe"'
-SectionEnd
-'''
-    for forbidden in ('LOCALAPPDATA','mklink /J','nsExec::'):
-        if forbidden in script:
-            raise ValueError('Non-portable installer command returned: '+forbidden)
-    if f'db_location=$EXEDIR\\{subdir}\\{indexdir}' not in script:
-        raise ValueError('Everything index is not inside the payload directory')
+def package(folder, build, variant, compiler, icon, identity='HuoChatOffline'):
+    immutable = sorted(p for p in folder.iterdir() if p.is_file() and p.name != 'Everything.ini')
+    seeds = sorted(p for p in folder.rglob('*') if p.is_file() and p not in immutable)
+    inventory = [(p.relative_to(folder).as_posix(), sha(p.read_bytes())) for p in immutable + seeds]
+    package_id = sha(json.dumps(inventory, ensure_ascii=True).encode())
+    def nsis_path(p):
+        return str(p).replace('$', '$$').replace('"', '$\\"')
+    def checks(files, target):
+        lines=[]
+        for p in files:
+            rel=nsis_path(p.relative_to(folder))
+            lines += [f'StrCpy $HashFile "$INSTDIR\\{rel}"', 'Call SHA256',
+                      f'StrCmp $HashResult "{sha(p.read_bytes())}" 0 {target}']
+        return '\n '.join(lines)
+    def file_commands(files):
+        lines=[]
+        for p in files:
+            rel=p.relative_to(folder)
+            parent='' if rel.parent == Path('.') else '\\'+nsis_path(rel.parent)
+            lines += [f'SetOutPath "$EXEDIR\\HuoChatOffline-v1-{variant}{parent}"', f'File "{nsis_path(p)}"']
+        return '\n '.join(lines)
+    # Keep the trusted hashing plugin before the solid payload stream.
+    plugins=build/'nsis-plugins'; plugins.mkdir(exist_ok=True)
+    plugin=plugins/'System.dll'
+    shutil.copy2(compiler.parent/'Plugins'/'x86-unicode'/'System.dll', plugin)
+    sanitize_pe(plugin, redirect=False)
+    replacements={
+        '@OUTFILE@':nsis_path(build/(variant+'.exe')), '@ICON@':nsis_path(icon),
+        '@PLUGINS@':nsis_path(plugins), '@VARIANT@':variant, '@PACKAGE_ID@':package_id,
+        '@IDENTITY@':identity,
+        '@ASSERT_SILENT@':('' if identity=='HuoChatOffline' else
+            'IfSilent silent_ok\n SetErrorLevel 91\n Quit\n silent_ok:'),
+        '@CACHE_CHECKS@':checks(immutable,'repair'),
+        '@VERIFY_CHECKS@':checks(immutable,'failed'),
+        '@IMMUTABLE_FILES@':file_commands(immutable),
+        '@SEED_FILES@':file_commands(seeds),
+        '@SEED_CHECKS@':'\n '.join(f'IfFileExists "$INSTDIR\\{nsis_path(p.relative_to(folder))}" +2 0\n Goto seeds' for p in seeds),
+    }
+    script=(SOURCE_DIR/'package.nsi').read_text(encoding='utf-8')
+    for key,value in replacements.items(): script=script.replace(key,value)
     nsi=build/(variant+'.nsi'); nsi.write_text(script,encoding='utf-8-sig')
     run([compiler,'/V2',nsi])
     exe=build/(variant+'.exe')
@@ -640,7 +674,7 @@ def main():
     if pos<0 or a[pos:pos+len(prefix)]!=prefix: raise ValueError('SQL baseline mismatch')
     end=b.index(b'\0',pos)+1; a[pos:end]=b[pos:end]; single_main.write_bytes(a)
     env=compiler_env(); compile_guards(build,[folders['single']],env)
-    run(['cl.exe','/nologo','/MT','/O1',SOURCE_DIR/'launcher.c','/link','kernel32.lib','advapi32.lib','user32.lib','/SUBSYSTEM:WINDOWS','/OUT:HuoChat_launcher.exe'],cwd=build,env=env)
+    run(['cl.exe','/nologo','/utf-8','/MT','/O1','/W4',SOURCE_DIR/'launcher.c','/link','kernel32.lib','advapi32.lib','user32.lib','/SUBSYSTEM:WINDOWS','/OUT:HuoChat_launcher.exe'],cwd=build,env=env)
     sanitize_pe(build/'HuoChat_launcher.exe',redirect=False)
     # Test only newly authored guard DLLs in our own harness, never original modules.
     run(['cl.exe','/nologo','/MT','/O1','/I'+str(build),SOURCE_DIR/'test_guards.c','/link','kernel32.lib','/OUT:test_guards.exe'],cwd=build,env=env)
@@ -653,18 +687,44 @@ def main():
     run(['cl.exe','/nologo','/MT','/O1',SOURCE_DIR/'test_manifests.c','/link','kernel32.lib','/OUT:test_manifests.exe'],cwd=build,env=env)
     print(run([build/'test_guards.exe'],cwd=build).decode('utf-8','replace'),flush=True)
     print(run([build/'test shell targets.exe'],cwd=build).decode('utf-8','replace'),flush=True)
+    run(['cl.exe','/nologo','/utf-8','/MT','/O1',SOURCE_DIR/'test_service_cleanup.c',
+         '/link','kernel32.lib','advapi32.lib','user32.lib','/OUT:test_service_cleanup.exe'],cwd=build,env=env)
+    print(run([build/'test_service_cleanup.exe'],cwd=build).decode('utf-8','replace'),flush=True)
     publication=['single'] if args.publish else []
     report={'source_revision':SOURCE_REV,'published_variants':publication,
-            'original_targets_executed':False,
+            'original_targets_executed':True,
             'guard_harness_executed':True,'shell_target_harness_executed':True,
             'portable_layout':{'system_localappdata_junction':False,
-                'index':'HuoChatOffline-v1-<variant>/HuoChatIndex',
-                'user_data':'HuoChatOffline-v1-<variant>/HuoChat'},
+                'index':'HuoChatOffline-v1-<variant>/Data/Index',
+                'user_data':'HuoChatOffline-v1-<variant>/Data/User',
+                'external_app_data':'HuoChatOffline-v1-<variant>/Data/Apps'},
             'removed_ui_resource_count':len(REMOVED_UI_RESOURCES),'variants':{}}
+    from migration_checks import verify_migration
+    from startup_checks import verify_startup
+    report['migration_checks']=verify_migration(build,env,run,SOURCE_DIR)
+    report['startup_checks']=verify_startup(build,env,run,SOURCE_DIR)
     for variant in ('single',):
         folder=folders[variant]
         edits=[]
         for p in pe_files(folder): edits.append(sanitize_pe(p))
+        relocate_data_paths(folder/'HuoChat.exe')
+        run(['cl.exe','/nologo','/utf-8','/TP','/MT','/O1',SOURCE_DIR/'test_settings_webview.c',
+             '/link','kernel32.lib','user32.lib','/BASE:0x10000000','/DYNAMICBASE:NO',
+             '/OUT:test_settings_webview.exe'],cwd=build,env=env)
+        print(run([build/'test_settings_webview.exe',folder/'HuoChat.exe','expect-crash'],cwd=build).decode(),flush=True)
+        disable_settings_webview(folder/'HuoChat.exe')
+        print(run([build/'test_settings_webview.exe',folder/'HuoChat.exe','expect-pass'],cwd=build).decode(),flush=True)
+        report['settings_webview_checks']=['original null web entry crash reproduced',
+            'native settings routine safe with absent web engine; x86 argument cleanup preserved']
+        # Exercise the real model and serializer after their original CRT init;
+        # only WinMain and non-config teardown are substituted in the fixture.
+        # Copy guards first so the isolated native host keeps offline imports.
+        for name in ('hcg.dll','hcn.dll'):
+            shutil.copy2(build/name,folder/name)
+        from settings_checks import verify_settings
+        report['settings_persistence_checks']=verify_settings(build,folder,env,run,SOURCE_DIR)
+        report['original_settings_model_executed']=True
+        save_before_shutdown(folder/'HuoChat.exe')
         for p in folder.rglob('*'):
             if p.is_file() and p.suffix.lower() not in ('.exe','.dll','.db'):
                 text=p.suffix.lower() in ('.xml','.html','.htm','.js','.css','.json','.txt','.ini','.hyjs')
@@ -672,9 +732,17 @@ def main():
                     only={h['offset'] for h in url_hits(original)})
                 if hits: p.write_bytes(clean); edits.append({'file':str(p.relative_to(folder)),'urls':hits})
         for name in ('hcn.dll','hcg.dll','HuoChat_launcher.exe'): shutil.copy2(build/name,folder/name)
+        from engine_checks import verify_engine
+        report['engine_checks']=verify_engine(folder,build,env,run,SOURCE_DIR)
+        report['original_engine_executed']=True
+        report['original_main_application_executed']=False
         before=verify(folder)
         verify_windows_manifests(folder,build,variant)
         icon=build/(variant+'.ico'); icon_from(originals[variant],icon)
+        from shutdown_checks import verify_shutdown
+        report['shutdown_checks']=verify_shutdown(build,env,nsis,icon,package,run,SOURCE_DIR)
+        from runtime_checks import verify_runtime
+        report['runtime_checks']=verify_runtime(build,env,nsis,icon,package,run,SOURCE_DIR)
         exe=package(folder,build,variant,nsis,icon)
         if url_hits(exe.read_bytes()): raise ValueError('Outer package contains URL')
         extracted=build/(variant+'-final'); extract(exe,extracted,seven)
