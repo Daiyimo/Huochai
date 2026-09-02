@@ -1,4 +1,5 @@
-"""Build both offline packages from pinned original Git blobs, without running them."""
+"""Build and verify the maintained offline single-file package without running it."""
+import atexit
 from pathlib import Path
 import argparse
 import hashlib
@@ -12,6 +13,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import time
 import zipfile
 import zlib
 import xml.etree.ElementTree as ET
@@ -20,6 +22,7 @@ from policy import (INTENTIONALLY_ABSENT, NETWORK_APIS, NETWORK_DLLS, GUARDED_DL
                     scrub_urls, url_hits)
 
 ROOT = Path(__file__).resolve().parent.parent
+SOURCE_DIR = Path(__file__).resolve().parent
 SOURCE_REV = '39cf149bf9d7030a8f002b4198a9087f985c6b7a'
 SOURCES = {
     'single': ('火柴单文件版.exe', '452541a3327935ac452504ff0355bbea801090837f626f1a82c5245e3f89ef1a'),
@@ -48,7 +51,7 @@ def check_policy_parity():
     guard.c writes some module names without the ``.dll`` suffix, so both sides
     are normalised before comparison.
     """
-    source=(Path(__file__).parent/'guard.c').read_text(encoding='utf-8',errors='replace')
+    source=(SOURCE_DIR/'guard.c').read_text(encoding='utf-8',errors='replace')
     names=set()
     for match in re.finditer(r'contains\(base,\s*L"([a-z0-9._\-]+)"\)', source):
         token=match.group(1).lower()
@@ -76,6 +79,21 @@ def run(args, **kwargs):
     if result.returncode:
         raise RuntimeError(f'Command failed: {args[0]}\n' + result.stdout.decode('utf-8', 'replace')[-10000:])
     return result.stdout
+
+def cleanup_build_dir(path):
+    """Remove a Windows build tree after child processes release their handles."""
+    for attempt in range(20):
+        try:
+            shutil.rmtree(path)
+            return
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            if attempt == 19:
+                print('Warning: could not remove temporary build directory '
+                      f'{path}: {exc}', file=sys.stderr, flush=True)
+                return
+            time.sleep(0.25)
 
 def sha(data): return hashlib.sha256(data).hexdigest()
 
@@ -368,7 +386,7 @@ def compile_guards(build,folders,env):
         if target not in known: raise ValueError('Unreviewed ordinal forwarder '+target)
         definitions.append(f'  Ordinal{ordinal}={known[target]} @{ordinal} NONAME')
     (build/'guard.def').write_text('\n'.join(definitions),encoding='utf-8')
-    run(['cl.exe','/nologo','/LD','/MT','/O1','/W3',ROOT/'offline'/'guard.c','/link','kernel32.lib','shell32.lib','ole32.lib','/DEF:guard.def','/OUT:hcg.dll','/DYNAMICBASE','/NXCOMPAT'],cwd=build,env=env)
+    run(['cl.exe','/nologo','/LD','/MT','/O1','/W3',SOURCE_DIR/'guard.c','/link','kernel32.lib','shell32.lib','ole32.lib','/DEF:guard.def','/OUT:hcg.dll','/DYNAMICBASE','/NXCOMPAT'],cwd=build,env=env)
     for name in ('hcn.dll','hcg.dll'): sanitize_pe(build/name,redirect=False)
     # Exercise every generated deny export with its actual stdcall arity. This
     # catches stack/pop mistakes without loading any original application code.
@@ -591,8 +609,10 @@ SectionEnd
 
 def main():
     ap=argparse.ArgumentParser(description=__doc__)
-    ap.add_argument('--publish',action='store_true',help='Replace both root packages only after final verification')
-    ap.add_argument('--publish-single',action='store_true',help='Replace only the root single-file package after both candidates verify')
+    ap.add_argument('--publish','--publish-single',dest='publish',action='store_true',
+                    help='Replace the root single-file package after final verification')
+    ap.add_argument('--keep-workdir',action='store_true',
+                    help='Retain the temporary build directory and verification evidence')
     ap.add_argument('--verify',type=Path,help='Check an already extracted payload; never launches it')
     args=ap.parse_args()
     if args.verify:
@@ -600,7 +620,9 @@ def main():
     seven=Path(r'C:\Program Files\7-Zip\7z.exe'); nsis=Path(r'C:\Program Files (x86)\NSIS\makensis.exe')
     # The static deny list and the runtime list in guard.c must agree.
     check_policy_parity()
-    build=Path(tempfile.mkdtemp(prefix='offline_build_',dir=ROOT/'reverse'))
+    build=Path(tempfile.mkdtemp(prefix='huochai_offline_build_'))
+    if not args.keep_workdir:
+        atexit.register(cleanup_build_dir, build)
     print('Build directory:',build,flush=True)
     folders={}; originals={}
     for variant,(filename,expected) in SOURCES.items():
@@ -617,21 +639,21 @@ def main():
     pos=b.find(prefix)
     if pos<0 or a[pos:pos+len(prefix)]!=prefix: raise ValueError('SQL baseline mismatch')
     end=b.index(b'\0',pos)+1; a[pos:end]=b[pos:end]; single_main.write_bytes(a)
-    env=compiler_env(); compile_guards(build,list(folders.values()),env)
-    run(['cl.exe','/nologo','/MT','/O1',ROOT/'offline'/'launcher.c','/link','kernel32.lib','advapi32.lib','user32.lib','/SUBSYSTEM:WINDOWS','/OUT:HuoChat_launcher.exe'],cwd=build,env=env)
+    env=compiler_env(); compile_guards(build,[folders['single']],env)
+    run(['cl.exe','/nologo','/MT','/O1',SOURCE_DIR/'launcher.c','/link','kernel32.lib','advapi32.lib','user32.lib','/SUBSYSTEM:WINDOWS','/OUT:HuoChat_launcher.exe'],cwd=build,env=env)
     sanitize_pe(build/'HuoChat_launcher.exe',redirect=False)
     # Test only newly authored guard DLLs in our own harness, never original modules.
-    run(['cl.exe','/nologo','/MT','/O1','/I'+str(build),ROOT/'offline'/'test_guards.c','/link','kernel32.lib','/OUT:test_guards.exe'],cwd=build,env=env)
-    run(['cl.exe','/nologo','/MT','/O1',ROOT/'offline'/'test_shell_targets.c','/link','kernel32.lib','shell32.lib','/OUT:test shell targets.exe'],cwd=build,env=env)
+    run(['cl.exe','/nologo','/MT','/O1','/I'+str(build),SOURCE_DIR/'test_guards.c','/link','kernel32.lib','/OUT:test_guards.exe'],cwd=build,env=env)
+    run(['cl.exe','/nologo','/MT','/O1',SOURCE_DIR/'test_shell_targets.c','/link','kernel32.lib','shell32.lib','/OUT:test shell targets.exe'],cwd=build,env=env)
     # Spawn guard: local helpers must start, browser/remote targets must not.
     spawn=(build/'spawn'); spawn.mkdir(exist_ok=True)
     shutil.copy2(build/'hcg.dll',spawn/'hcg.dll')
-    run(['cl.exe','/nologo','/MT','/O1','/I'+str(build),ROOT/'offline'/'test_spawn_guard.c','/link','kernel32.lib',f'/OUT:{spawn}\\test_spawn_guard.exe'],cwd=spawn,env=env)
+    run(['cl.exe','/nologo','/MT','/O1','/I'+str(build),SOURCE_DIR/'test_spawn_guard.c','/link','kernel32.lib',f'/OUT:{spawn}\\test_spawn_guard.exe'],cwd=spawn,env=env)
     print(run([spawn/'test_spawn_guard.exe'],cwd=spawn).decode('utf-8','replace'),flush=True)
-    run(['cl.exe','/nologo','/MT','/O1',ROOT/'offline'/'test_manifests.c','/link','kernel32.lib','/OUT:test_manifests.exe'],cwd=build,env=env)
+    run(['cl.exe','/nologo','/MT','/O1',SOURCE_DIR/'test_manifests.c','/link','kernel32.lib','/OUT:test_manifests.exe'],cwd=build,env=env)
     print(run([build/'test_guards.exe'],cwd=build).decode('utf-8','replace'),flush=True)
     print(run([build/'test shell targets.exe'],cwd=build).decode('utf-8','replace'),flush=True)
-    publication=list(SOURCES) if args.publish else ['single'] if args.publish_single else []
+    publication=['single'] if args.publish else []
     report={'source_revision':SOURCE_REV,'published_variants':publication,
             'original_targets_executed':False,
             'guard_harness_executed':True,'shell_target_harness_executed':True,
@@ -639,7 +661,8 @@ def main():
                 'index':'HuoChatOffline-v1-<variant>/HuoChatIndex',
                 'user_data':'HuoChatOffline-v1-<variant>/HuoChat'},
             'removed_ui_resource_count':len(REMOVED_UI_RESOURCES),'variants':{}}
-    for variant,folder in folders.items():
+    for variant in ('single',):
+        folder=folders[variant]
         edits=[]
         for p in pe_files(folder): edits.append(sanitize_pe(p))
         for p in folder.rglob('*'):
@@ -670,18 +693,20 @@ def main():
         'sha256':report['variants'][variant]['sha256']}
         for variant in publication}
     (build/'verification.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
-    # No publication happens before BOTH final packages pass.
-    if args.publish or args.publish_single:
-        publish_variants=list(SOURCES) if args.publish else ['single']
+    # No publication happens before the final single-file package passes.
+    if args.publish:
+        publish_variants=['single']
         for variant in publish_variants:
             filename,_=SOURCES[variant]
             backup=build/(variant+'-previous-root.exe'); shutil.copy2(ROOT/filename,backup)
         for variant in publish_variants:
             filename,_=SOURCES[variant]
             temporary=ROOT/(filename+'.new'); shutil.copy2(build/(variant+'.exe'),temporary); os.replace(temporary,ROOT/filename)
-        shutil.copy2(build/'verification.json',ROOT/'offline'/'verification.json')
         print('Published verified package(s): '+', '.join(publish_variants),flush=True)
-    print('Evidence:',build/'verification.json',flush=True)
+    if args.keep_workdir:
+        print('Retained evidence:',build/'verification.json',flush=True)
+    else:
+        print('Verification complete; temporary build files will be removed.',flush=True)
 
 if __name__=='__main__':
     main()

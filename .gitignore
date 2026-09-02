@@ -1,9 +1,8 @@
-# 逆向工程目录（含大体积中间产物，整个不入库）
-reverse/
-
 # 运行产生的数据 / 安装目录（绝不入库）
 HuoChat/
 
-# Python analysis/build caches and offline runtime directories
+# Python caches and offline runtime directories
 __pycache__/
+*.py[cod]
+.pytest_cache/
 HuoChatOffline-v1-*/
