@@ -4,6 +4,8 @@
 #include "portable.h"
 #include "migration.h"
 #include "startup.h"
+#include "index_checkpoint.h"
+#include "backend.h"
 
 #ifndef HUOCHAT_LAUNCHER_MUTEX
 #define HUOCHAT_LAUNCHER_MUTEX L"Local\\HuoChatOfflineLauncherV1"
@@ -13,8 +15,8 @@
 #define HUOCHAT_STOP_EVENT L"Local\\HuoChatOfflineLauncherStoppingV1"
 #endif
 
-/* Discovery stops as soon as the engine is known. Kernel handles then wake
-   us only when the UI or engine exits; a restarted engine is discovered again. */
+/* Discovery stops as soon as the engine is known. Wait on lifecycle handles
+   and checkpoint deadlines; a restarted engine is discovered again. */
 static HANDLE FindEngine(HANDLE job,LPCWSTR expected) {
     PROCESSENTRY32W entry={0}; HANDLE snapshot,process,found=NULL; WCHAR image[PATH_CAP]; DWORD count,session,own_session;
     if(!ProcessIdToSessionId(GetCurrentProcessId(),&own_session)) return NULL;
@@ -22,13 +24,13 @@ static HANDLE FindEngine(HANDLE job,LPCWSTR expected) {
     if(snapshot==INVALID_HANDLE_VALUE) return NULL;
     entry.dwSize=sizeof(entry);
     if(Process32FirstW(snapshot,&entry)) do {
-        if(lstrcmpiW(entry.szExeFile,L"hc_engine.exe") ||
+        if(lstrcmpiW(entry.szExeFile,wcsrchr(expected,L'\\')+1) ||
            !ProcessIdToSessionId(entry.th32ProcessID,&session) || session!=own_session) continue;
         process=OpenProcess(SYNCHRONIZE|PROCESS_SET_QUOTA|PROCESS_TERMINATE|PROCESS_QUERY_LIMITED_INFORMATION,FALSE,entry.th32ProcessID);
         if(!process) process=OpenProcess(SYNCHRONIZE|PROCESS_QUERY_LIMITED_INFORMATION,FALSE,entry.th32ProcessID);
         if(!process) continue;
         count=PATH_CAP;
-        if(QueryFullProcessImageNameW(process,0,image,&count) && !lstrcmpiW(image,expected)) {
+        if(QueryFullProcessImageNameW(process,0,image,&count) && SameBackendFile(image,expected)) {
             if(!AssignProcessToJobObject(job,process)) LogEvent(L"无法将搜索引擎加入退出清理作业",GetLastError());
             found=process; break;
         }
@@ -38,16 +40,20 @@ static HANDLE FindEngine(HANDLE job,LPCWSTR expected) {
     return found;
 }
 
-static void WaitForUi(PROCESS_INFORMATION *ui,HANDLE job,LPCWSTR expected,HANDLE stopping) {
-    HANDLE engine=NULL,handles[3]; DWORD result,started=GetTickCount();
+static void WaitForUi(PROCESS_INFORMATION *ui,HANDLE job,LPCWSTR expected,HANDLE stopping,LPCWSTR dir) {
+    HANDLE engine=NULL,handles[3]; DWORD result,timeout,started=GetTickCount();IndexCheckpoint checkpoint={0};
     for(;;) {
+        if(WaitForSingleObject(ui->hProcess,0)==WAIT_OBJECT_0 || WaitForSingleObject(stopping,0)==WAIT_OBJECT_0)break;
         if(!engine) {
             engine=FindEngine(job,expected);
-            if(engine) LogEvent(L"搜索引擎已接管，停止周期性进程扫描",0);
+            if(engine) {
+                LogEvent(L"搜索引擎已接管，停止周期性进程扫描",0);
+                InitCheckpoint(&checkpoint,engine,dir);
+            }
         }
         handles[0]=ui->hProcess; handles[1]=stopping; handles[2]=engine;
-        result=WaitForMultipleObjects(engine ? 3:2,handles,FALSE,
-            engine ? INFINITE : GetTickCount()-started<10000 ? 500:5000);
+        timeout=engine ? TickCheckpoint(&checkpoint,engine,stopping) : GetTickCount()-started<10000 ? 500:5000;
+        result=WaitForMultipleObjects(engine ? 3:2,handles,FALSE,timeout);
         if(result==WAIT_OBJECT_0 || result==WAIT_OBJECT_0+1 || result==WAIT_FAILED) break;
         if(engine && result==WAIT_OBJECT_0+2) {
             CloseHandle(engine); engine=NULL; started=GetTickCount();
@@ -63,7 +69,8 @@ static void WaitForUi(PROCESS_INFORMATION *ui,HANDLE job,LPCWSTR expected,HANDLE
 static BOOL ServiceBelongsToDir(SC_HANDLE scm,LPCWSTR selfdir) {
     SC_HANDLE svc=NULL; BOOL owned=FALSE;
     DWORD need=0; LPQUERY_SERVICE_CONFIGW cfg=NULL; WCHAR expected[PATH_CAP]; size_t length;
-    svc=OpenServiceW(scm,L"Everything",SERVICE_QUERY_CONFIG);
+    BackendPaths backend;if(!BackendFromDirectory(&backend,selfdir))return FALSE;
+    svc=OpenServiceW(scm,backend.service,SERVICE_QUERY_CONFIG);
     if(!svc) return FALSE;
     need=0;
     QueryServiceConfigW(svc,NULL,0,&need);
@@ -72,7 +79,7 @@ static BOOL ServiceBelongsToDir(SC_HANDLE scm,LPCWSTR selfdir) {
         /* The path may be quoted; skip the quote before comparing. */
         LPCWSTR bin=cfg->lpBinaryPathName;
         if(*bin==L'"') ++bin;
-        if(JoinPath(expected,PATH_CAP,selfdir,L"hc_engine.exe")) {
+        if(SUCCEEDED(StringCchCopyW(expected,PATH_CAP,backend.exe))) {
             length=wcslen(expected);
             owned=!_wcsnicmp(bin,expected,length) && (bin[length]==0 || bin[length]==L'"' || bin[length]==L' ');
         }
@@ -84,20 +91,21 @@ static BOOL ServiceBelongsToDir(SC_HANDLE scm,LPCWSTR selfdir) {
 
 static void StopEngineService(LPCWSTR selfdir) {
     SC_HANDLE scm=NULL,svc=NULL; SERVICE_STATUS st={0}; BOOL requested=FALSE;
+    BackendPaths backend;if(!BackendFromDirectory(&backend,selfdir))return;
     scm=OpenSCManagerW(NULL,NULL,SC_MANAGER_CONNECT);
     if(!scm) return;
     if(!ServiceBelongsToDir(scm,selfdir)) { CloseServiceHandle(scm); return; }
     /* Request only the rights needed for each operation. Standard users may
        have permission to stop this service but not DELETE permission; asking
        for both on one handle made OpenService fail and skipped all cleanup. */
-    svc=OpenServiceW(scm,L"Everything",SERVICE_QUERY_STATUS|SERVICE_STOP);
+    svc=OpenServiceW(scm,backend.service,SERVICE_QUERY_STATUS|SERVICE_STOP);
     if(svc) {
         requested=ControlService(svc,SERVICE_CONTROL_STOP,&st) || GetLastError()==ERROR_SERVICE_NOT_ACTIVE;
         if(!requested) LogEvent(L"停止本程序的 Everything 服务失败",GetLastError());
         CloseServiceHandle(svc);
     } else LogEvent(L"没有停止本程序 Everything 服务的权限",GetLastError());
     if(!requested) { CloseServiceHandle(scm); return; }
-    svc=OpenServiceW(scm,L"Everything",SVC_DELETE);
+    svc=OpenServiceW(scm,backend.service,SVC_DELETE);
     if(svc) {
         if(!DeleteService(svc)) LogEvent(L"删除本程序的 Everything 服务注册失败",GetLastError());
         CloseServiceHandle(svc);
@@ -109,19 +117,20 @@ static void StopEngineService(LPCWSTR selfdir) {
    The directory test never touches a separately installed Everything. */
 static DWORD CollectEngines(LPCWSTR selfdir,HANDLE *handles,DWORD capacity) {
     PROCESSENTRY32W entry={0}; HANDLE snapshot,process; WCHAR image[PATH_CAP],expected[PATH_CAP]; DWORD count,total=0;
-    if(!JoinPath(expected,PATH_CAP,selfdir,L"hc_engine.exe")) return 0;
+    BackendPaths backend;if(!BackendFromDirectory(&backend,selfdir))return 0;
+    StringCchCopyW(expected,PATH_CAP,backend.exe);
     snapshot=CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS,0);
     if(snapshot==INVALID_HANDLE_VALUE) return 0;
     entry.dwSize=sizeof(entry);
     if(Process32FirstW(snapshot,&entry)) do {
-        if(lstrcmpiW(entry.szExeFile,L"hc_engine.exe")) continue;
+        if(lstrcmpiW(entry.szExeFile,wcsrchr(expected,L'\\')+1)) continue;
         process=OpenProcess(SYNCHRONIZE|PROCESS_QUERY_LIMITED_INFORMATION|PROCESS_TERMINATE,FALSE,entry.th32ProcessID);
         if(!process) {
             process=OpenProcess(SYNCHRONIZE|PROCESS_QUERY_LIMITED_INFORMATION,FALSE,entry.th32ProcessID);
             if(!process) continue;
         }
         count=PATH_CAP;
-        if(QueryFullProcessImageNameW(process,0,image,&count) && !lstrcmpiW(image,expected) && total<capacity)
+        if(QueryFullProcessImageNameW(process,0,image,&count) && SameBackendFile(image,expected) && total<capacity)
             handles[total++]=process;
         else CloseHandle(process);
     } while(Process32NextW(snapshot,&entry));
@@ -150,6 +159,7 @@ static BOOL ShutdownEngines(LPCWSTR dir) {
 }
 
 int WINAPI WinMain(HINSTANCE instance,HINSTANCE previous,LPSTR args,int show) {
+    BackendPaths backend;
     WCHAR path[PATH_CAP],command[PATH_CAP+32],engine[PATH_CAP],dir[PATH_CAP],state[PATH_CAP],data[PATH_CAP],temp[PATH_CAP],index[PATH_CAP],probe[PATH_CAP];
     DWORD n,error,exitcode=0; int result=0; HANDLE job=NULL,mutex=NULL,ready,stopping=NULL;
     BOOL engines_stopped;
@@ -184,19 +194,15 @@ int WINAPI WinMain(HINSTANCE instance,HINSTANCE previous,LPSTR args,int show) {
         ReportFailure(L"无法写入数据目录。请检查目录权限和磁盘空间。",GetLastError()); result=2; goto finish;
     }
     DeleteFileW(probe);
-    if(!UpdateConfiguration(data,index)) {
-        ReportFailure(L"无法更新索引路径，原配置已保留。请检查 Data\\Index.ini 的占用、权限或内容。",GetLastError()); result=2; goto finish;
+    if(!BackendFromDirectory(&backend,dir) || !(backend.modern ? PrepareBackend(&backend):UpdateConfiguration(data,index))) {
+        ReportFailure(L"无法准备搜索引擎配置。请检查 Data 内索引配置及 Engine 目录的占用和权限。",GetLastError()); result=2; goto finish;
     }
     startup_status=ReconcileStartup(dir);
     if(startup_status!=ERROR_SUCCESS) LogEvent(L"开机启动入口更新失败，将在下次启动时重试",startup_status);
-    /* User-requested shared portable profile for apps launched from HuoChat.
-       Never modify the Windows user/system environment or USERPROFILE. */
-    JoinPath(state,PATH_CAP,dir,L"Data\\Apps");
-    if(!SetEnvironmentVariableW(L"LOCALAPPDATA",state) || !SetEnvironmentVariableW(L"APPDATA",state) ||
-       !SetEnvironmentVariableW(L"TEMP",temp) || !SetEnvironmentVariableW(L"TMP",temp)) {
-        ReportFailure(L"无法初始化便携数据环境。",GetLastError()); result=2; goto finish;
-    }
-    JoinPath(path,PATH_CAP,dir,L"HuoChat.exe"); JoinPath(engine,PATH_CAP,dir,L"hc_engine.exe");
+    /* Preserve the caller's environment for external applications. HuoChat's
+       own AppData/temp APIs are redirected inside hcg.dll, not inherited by
+       independently running programs such as WeGame. */
+    JoinPath(path,PATH_CAP,dir,L"HuoChat.exe"); StringCchCopyW(engine,PATH_CAP,backend.exe);
     StringCchPrintfW(command,PATH_CAP+32,L"\"%s\"%s",path,startup ? L" -s":L"");
     job=CreateJobObjectW(NULL,NULL);
     limits.BasicLimitInformation.LimitFlags=JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE|JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK;
@@ -216,7 +222,7 @@ int WINAPI WinMain(HINSTANCE instance,HINSTANCE previous,LPSTR args,int show) {
         ReportFailure(L"无法恢复火柴主进程。",error); result=5; goto finish;
     }
     CloseHandle(pi.hThread);
-    WaitForUi(&pi,job,engine,stopping);
+    WaitForUi(&pi,job,engine,stopping,dir);
     SetEvent(stopping);
     LogEvent(L"已收到退出请求，取消本次索引工作",0);
     /* Notify the service manager before terminating an owned service process,

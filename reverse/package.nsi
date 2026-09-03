@@ -8,11 +8,11 @@ ShowInstDetails nevershow
 SetCompressor /SOLID /FINAL lzma
 SetCompressorDictSize 16
 Icon "@ICON@"
-VIProductVersion "2026.9.2.4"
+VIProductVersion "2026.9.3.4"
 VIAddVersionKey "ProductName" "火柴离线单文件版"
 VIAddVersionKey "FileDescription" "火柴离线便携启动器"
-VIAddVersionKey "FileVersion" "2026.09.02.4"
-VIAddVersionKey "ProductVersion" "2.1.0.11 / Offline 2026.09.02.4"
+VIAddVersionKey "FileVersion" "2026.09.03.4"
+VIAddVersionKey "ProductVersion" "2.1.0.11 / Offline 2026.09.03.4"
 VIAddVersionKey "LegalCopyright" "Original application and components retain their respective licenses."
 !addplugindir /x86-unicode "@PLUGINS@"
 !include "FileFunc.nsh"
@@ -164,7 +164,7 @@ Section
  @CACHE_CHECKS@
  Goto seed_check
  repair:
- StrCpy $Failure "程序文件无法更新或修复。请退出火柴，等待索引保存完成，并检查文件占用和目录权限。"
+ StrCpy $Failure "程序文件无法更新或修复。请退出火柴，并检查文件占用和目录权限。"
  ClearErrors
  Delete "$INSTDIR\.package.ini"
  IfErrors failed
