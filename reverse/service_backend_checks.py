@@ -92,7 +92,7 @@ def verify_service(payload,example,output):
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--payload',type=Path,required=True)
-    parser.add_argument('--example',default='sample-archive-001.zip')
+    parser.add_argument('--example',required=True,help='Exact filename to verify; use a non-sensitive test file.')
     parser.add_argument('--output',type=Path,required=True)
     args=parser.parse_args()
     print(json.dumps(verify_service(args.payload,args.example,args.output),ensure_ascii=False,indent=2))
