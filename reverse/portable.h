@@ -75,8 +75,8 @@ static BOOL MissingSettings(WCHAR *out,size_t capacity,IniSetting *settings,size
 /* Preserve local indexing preferences and unknown sections. Only the database
    location and mandatory offline settings are maintained by this launcher.
    The old file is never deleted before the complete replacement is flushed. */
-static BOOL UpdateConfiguration(LPCWSTR dir,LPCWSTR index) {
-    IniSetting settings[]={
+static BOOL UpdateConfigurationFile(LPCWSTR dir,LPCWSTR index,LPCWSTR filename,const IniSetting *overrides,size_t override_count) {
+    IniSetting settings[64]={
         {L"db_location",index,FALSE},
         {L"show_tray_icon",L"0",FALSE}, {L"show_in_taskbar",L"0",FALSE},
         {L"check_for_updates_on_startup",L"0",FALSE}, {L"beta_updates",L"0",FALSE},
@@ -90,8 +90,14 @@ static BOOL UpdateConfiguration(LPCWSTR dir,LPCWSTR index) {
     WCHAR ini[PATH_CAP], temporary[PATH_CAP]={0}, *input=NULL,*output=NULL,*cursor;
     BYTE *raw=NULL; CHAR *encoded=NULL; HANDLE file=INVALID_HANDLE_VALUE;
     DWORD length,received,error=ERROR_INVALID_DATA; int chars,bytes; size_t capacity,i;
-    BOOL inside=FALSE,found=FALSE,ok=FALSE; const size_t count=sizeof(settings)/sizeof(settings[0]);
-    if(!JoinPath(ini,PATH_CAP,dir,L"Index.ini")) return FALSE;
+    BOOL inside=FALSE,found=FALSE,ok=FALSE; size_t count=0,j;
+    while(settings[count].key)count++;
+    for(i=0;i<override_count;i++) {
+        for(j=0;j<count;j++)if(!lstrcmpiW(settings[j].key,overrides[i].key))break;
+        if(j>=64){SetLastError(ERROR_INSUFFICIENT_BUFFER);return FALSE;}
+        settings[j]=overrides[i];settings[j].seen=FALSE;if(j==count)count++;
+    }
+    if(!JoinPath(ini,PATH_CAP,dir,filename)) return FALSE;
     file=CreateFileW(ini,GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,NULL);
     if(file==INVALID_HANDLE_VALUE) return FALSE;
     length=GetFileSize(file,NULL);
@@ -163,5 +169,8 @@ done:
     if(raw) HeapFree(GetProcessHeap(),0,raw);
     if(!ok) SetLastError(error);
     return ok;
+}
+static BOOL UpdateConfiguration(LPCWSTR dir,LPCWSTR index) {
+    return UpdateConfigurationFile(dir,index,L"Index.ini",NULL,0);
 }
 #endif

@@ -13,9 +13,9 @@ class LauncherCleanupTests(unittest.TestCase):
         # that case none of the cleanup ran after HuoChat crashed.
         combined = 'SERVICE_QUERY_CONFIG|SERVICE_QUERY_STATUS|SERVICE_STOP|SVC_DELETE'
         self.assertNotIn(combined, SOURCE)
-        self.assertIn('OpenServiceW(scm,L"Everything",SERVICE_QUERY_CONFIG)', SOURCE)
-        self.assertIn('OpenServiceW(scm,L"Everything",SERVICE_QUERY_STATUS|SERVICE_STOP)', SOURCE)
-        self.assertIn('OpenServiceW(scm,L"Everything",SVC_DELETE)', SOURCE)
+        self.assertIn('OpenServiceW(scm,backend.service,SERVICE_QUERY_CONFIG)', SOURCE)
+        self.assertIn('OpenServiceW(scm,backend.service,SERVICE_QUERY_STATUS|SERVICE_STOP)', SOURCE)
+        self.assertIn('OpenServiceW(scm,backend.service,SVC_DELETE)', SOURCE)
 
 
 if __name__ == '__main__':

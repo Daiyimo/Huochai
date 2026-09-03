@@ -9,6 +9,7 @@ import time
 import tempfile
 import uuid
 import winreg
+import os
 
 
 def verify_runtime(build, env, compiler, icon, package, run, source):
@@ -67,18 +68,24 @@ def verify_runtime(build, env, compiler, icon, package, run, source):
         return bool(handle)
     if launcher_running(): raise RuntimeError('Close the running HuoChat before the isolated runtime checks')
     results={}
+    # A distinct caller profile makes accidental reassignment to Data/Apps
+    # observable without writing test caches into the user's real profile.
+    system_profile=build/'caller profile';system_profile.mkdir()
+    launch_env=os.environ.copy()
+    for name in ('APPDATA','LOCALAPPDATA','TEMP','TMP'):
+        directory=system_profile/name;directory.mkdir();launch_env[name]=str(directory)
+    expected_profile=[launch_env[name] for name in ('APPDATA','LOCALAPPDATA','TEMP','TMP')]
     def invoke(expected=0, args=(), quiet=True):
         start=time.perf_counter()
-        result=subprocess.run([str(exe),*(['/S'] if quiet else []),*args],cwd=location,timeout=20,creationflags=subprocess.CREATE_NO_WINDOW)
+        result=subprocess.run([str(exe),*(['/S'] if quiet else []),*args],cwd=location,env=launch_env,timeout=20,creationflags=subprocess.CREATE_NO_WINDOW)
         assert result.returncode==expected, (result.returncode,expected,(payload/'package-error.log').read_bytes() if (payload/'package-error.log').exists() else '')
         return round((time.perf_counter()-start)*1000)
     def ready():
         until(lambda:(payload/'ui.ready').exists() and (payload/'engine.ready').exists())
         until(lambda:'停止周期性进程扫描' in (payload/'Data'/'offline.log').read_text(encoding='utf-8'))
         assert (payload/'env-harness.exit').read_text()=='0'
-        expected=[str(payload/'Data'/'Apps')]*2+[str(payload/'Data'/'Temp')]*2
         for i in range(7):
-            assert (payload/f'env-child-{i}.txt').read_text(encoding='utf-8').splitlines()==expected
+            assert (payload/f'env-child-{i}.txt').read_text(encoding='utf-8').splitlines()==expected_profile
     def stop():
         cache=payload/'Data'/'Index'/'Everything.db'
         previous=cache.read_bytes() if cache.exists() else None
@@ -105,10 +112,8 @@ def verify_runtime(build, env, compiler, icon, package, run, source):
         assert (payload/'Data'/'User'/'note_backup'/'20260901').read_bytes()==b'legacy backup'
         assert 'exclude_folders=C:\\Legacy' in (payload/'Data'/'Index.ini').read_text(encoding='utf-8')
         assert winreg.QueryValueEx(key,'HuoChat')[0]=='"'+str(exe)+'" -s'
-        for leaf in ('env-appdata','env-localappdata'):
-            assert (payload/leaf).read_text(encoding='utf-8')==str(payload/'Data'/'Apps')
-        for leaf in ('env-temp','env-tmp'):
-            assert (payload/leaf).read_text(encoding='utf-8')==str(payload/'Data'/'Temp')
+        for leaf,expected in zip(('env-appdata','env-localappdata','env-temp','env-tmp'),expected_profile):
+            assert (payload/leaf).read_text(encoding='utf-8')==expected
         original=snapshot(); assert invoke(10)>=0; assert snapshot()==original
         old_pid=(payload/'engine.ready').read_text()
         (payload/'test-restart').write_bytes(b'1')
@@ -157,7 +162,7 @@ def verify_runtime(build, env, compiler, icon, package, run, source):
             'missing files and seeds','upgrade retention','locked repair fails closed','Unicode directory migration',
             'cancel slow indexing without waiting 15 seconds']
         results['checks']+=['default NSIS silent mode on cold/warm launch without /S',
-                            'seven real child launch routes inherit grouped profile',
+                            'seven real child launch routes preserve the caller profile and temporary directories',
                             'silent startup argument passed to UI','startup path repaired after move',
                             'legacy migration precedes NSIS default seeding']
         results['pass']=True

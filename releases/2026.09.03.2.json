@@ -1,0 +1,41 @@
+{
+  "version": "2026.09.03.2",
+  "built_on": "2026-09-03",
+  "upstream_version": "2.1.0.11",
+  "source_revision": "39cf149bf9d7030a8f002b4198a9087f985c6b7a",
+  "artifact": {
+    "filename": "火柴单文件版.exe",
+    "size": 5339642,
+    "sha256": "a5cb133bdf1145a62f892883665e6fb11858e39660fae57779f05d3f6a566c3e"
+  },
+  "engine": {
+    "version": "1.5.0.1423b",
+    "architecture": "x64",
+    "signed_upstream_sha256": "81b4d05e84e61891ac043dd76e97de616af17adf53b2ee2fe984d8b0bbbfcc21"
+  },
+  "sdk": {
+    "architecture": "x86",
+    "upstream_sha256": "1ffe69d856a8a071a7531d54d7b05ae04a87814b812e649521a67a606c7f93e0",
+    "instance_bridge": "hce.dll",
+    "exports": 89
+  },
+  "changes": [
+    "接入官方签名的 Everything 1.5 x64 引擎和 x86 SDK。",
+    "隔离实例、服务与索引，并支持嵌套引擎文件修复。"
+  ],
+  "validation": {
+    "python_unittests": {
+      "passed": 25
+    },
+    "packaged_payload_passed": true,
+    "coverage": [
+      "实际 SDK 与签名后台查询",
+      "非管理员引擎与独立 NTFS 服务",
+      "文件变化、实例隔离、缓存及打包修复"
+    ],
+    "scope": "发布时的自动化构建与回归结果，不代表完整桌面操作验收。"
+  },
+  "known_issues": [
+    "主程序的直接 IPC 查询路由遗漏，已在 2026.09.03.3 修复。"
+  ]
+}

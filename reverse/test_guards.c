@@ -13,6 +13,8 @@ typedef HMODULE (WINAPI *LOADW)(LPCWSTR);
 typedef FARPROC (WINAPI *GETPROC)(HMODULE,LPCSTR);
 typedef HINSTANCE (WINAPI *SHELLW)(HWND,LPCWSTR,LPCWSTR,LPCWSTR,LPCWSTR,INT);
 typedef HRESULT (WINAPI *FOLDERW)(HWND,int,HANDLE,DWORD,LPWSTR);
+typedef DWORD (WINAPI *TEMPW)(DWORD,LPWSTR);
+typedef DWORD (WINAPI *TEMPA)(DWORD,LPSTR);
 #define CHECK(x) do { if(!(x)) { printf("FAILED line %d\n",__LINE__); return 1; } } while(0)
 
 int main(void) {
@@ -45,6 +47,20 @@ int main(void) {
     while(n && expected[n-1]!=L'\\') --n;
     expected[n]=0; lstrcatW(expected,L"Data");
     CHECK(lstrcmpiW(portable,expected)==0);
+    {
+        TEMPW tw=(TEMPW)GetProcAddress(guard,"GetTempPathW");
+        TEMPA ta=(TEMPA)GetProcAddress(guard,"GetTempPathA");
+        WCHAR short_buffer[2]={L'Q',L'Z'},before[MAX_PATH],after[MAX_PATH];CHAR ansi[MAX_PATH*4],expected_a[MAX_PATH*4];
+        DWORD length;
+        CHECK(tw && ta);CHECK(GetEnvironmentVariableW(L"TEMP",before,MAX_PATH));
+        lstrcatW(expected,L"\\Temp\\");length=(DWORD)lstrlenW(expected);
+        CHECK(tw(0,NULL)==length+1 && tw(2,short_buffer)==length+1 && short_buffer[0]==L'Q' && short_buffer[1]==L'Z');
+        CHECK(tw(MAX_PATH,portable)==length && !lstrcmpW(portable,expected));
+        CHECK(WideCharToMultiByte(CP_ACP,0,expected,-1,expected_a,sizeof(expected_a),NULL,NULL));
+        CHECK(ta(sizeof(ansi),ansi)==strlen(expected_a) && !lstrcmpA(ansi,expected_a));
+        CHECK(GetEnvironmentVariableW(L"TEMP",after,MAX_PATH) && !lstrcmpW(before,after));
+        CHECK(get(GetModuleHandleW(L"kernel32.dll"),"GetTempPathW")==GetProcAddress(guard,"GetTempPathW"));
+    }
     CHECK(load(L"\\\\example.invalid\\share\\x.dll")==NULL);
     CHECK(shell(NULL,L"open",L"https://example.invalid/",NULL,NULL,0)==(HINSTANCE)5);
     CHECK(shell(NULL,L"open",L"about:blank",NULL,NULL,0)==(HINSTANCE)5);

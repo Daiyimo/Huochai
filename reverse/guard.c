@@ -9,6 +9,14 @@
 
 static HMODULE self_module;
 #include "engine_entry.h"
+#include "backend.h"
+
+SC_HANDLE WINAPI Guard_OpenServiceW(SC_HANDLE manager,LPCWSTR name,DWORD access) {
+    BackendPaths paths;
+    if(name && !lstrcmpiW(name,L"Everything") && BackendFromModule(&paths,self_module) && paths.modern)
+        return OpenServiceW(manager,paths.service,access);
+    return OpenServiceW(manager,name,access);
+}
 
 BOOL WINAPI DllMain(HINSTANCE module, DWORD reason, LPVOID reserved) {
     (void)reserved;
@@ -34,7 +42,7 @@ static BOOL remote(LPCWSTR text) {
     if (!text) return FALSE;
     return contains(text, L"://") || contains(text, L"mailto:") ||
         contains(text, L"about:") || contains(text, L"javascript:") || contains(text, L"data:") ||
-        contains(text, L"microsoft-edge:") || contains(text, L"www.") ||
+        contains(text, L"microsoft-edge:") ||
         contains(text, L"\\\\?\\UNC\\") || contains(text, L"\\\\?\\GLOBALROOT\\Device\\Mup") ||
         contains(text, L"\\Device\\Mup") || contains(text, L"\\Device\\LanmanRedirector");
 }
@@ -87,8 +95,8 @@ static HMODULE net_stub(void) {
     return LoadLibraryExW(path, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
 }
 
-/* The application resolves known AppData folders to Data. External programs
-   inherit Data\\Apps through the launcher's process environment. */
+/* Only modules using this guard resolve their own AppData/temp to Data.
+   External applications inherit the unchanged caller environment. */
 static BOOL portable_dir_w(WCHAR *out, DWORD count) {
     DWORD n;
     if (!out || count < 4) return FALSE;
@@ -103,6 +111,23 @@ static BOOL portable_dir_a(CHAR *out, DWORD count) {
     WCHAR path[MAX_PATH];
     return portable_dir_w(path, MAX_PATH) &&
         WideCharToMultiByte(CP_ACP, 0, path, -1, out, count, NULL, NULL) != 0;
+}
+
+DWORD WINAPI Guard_GetTempPathW(DWORD count,LPWSTR out) {
+    WCHAR path[PATH_CAP];DWORD length;
+    if(!portable_dir_w(path,PATH_CAP) || FAILED(StringCchCatW(path,PATH_CAP,L"\\Temp\\")))return 0;
+    length=(DWORD)wcslen(path);
+    if(count<=length)return length+1;
+    if(!out){SetLastError(ERROR_INVALID_PARAMETER);return 0;}
+    CopyMemory(out,path,(length+1)*sizeof(WCHAR));return length;
+}
+DWORD WINAPI Guard_GetTempPathA(DWORD count,LPSTR out) {
+    WCHAR path[PATH_CAP];CHAR value[PATH_CAP*4];int bytes;
+    if(!Guard_GetTempPathW(PATH_CAP,path))return 0;
+    bytes=WideCharToMultiByte(CP_ACP,0,path,-1,value,sizeof(value),NULL,NULL);if(!bytes)return 0;
+    if(count<(DWORD)bytes)return (DWORD)bytes;
+    if(!out){SetLastError(ERROR_INVALID_PARAMETER);return 0;}
+    CopyMemory(out,value,bytes);return (DWORD)bytes-1;
 }
 static BOOL portable_csidl(int csidl) {
     int folder = csidl & 0xff;
@@ -200,6 +225,7 @@ FARPROC WINAPI Guard_GetProcAddress(HMODULE module, LPCSTR name) {
              lstrcmpA(name, "SHGetFolderPathA") == 0 || lstrcmpA(name, "SHGetFolderPathW") == 0 ||
              lstrcmpA(name, "SHGetSpecialFolderPathA") == 0 || lstrcmpA(name, "SHGetSpecialFolderPathW") == 0 ||
              lstrcmpA(name, "SHGetKnownFolderPath") == 0 ||
+             lstrcmpA(name, "GetTempPathW") == 0 || lstrcmpA(name, "GetTempPathA") == 0 ||
              lstrcmpA(name, "RegSetValueExW") == 0 || lstrcmpA(name, "RegSetValueExA") == 0 ||
              lstrcmpA(name, "SHSetValueW") == 0 || lstrcmpA(name, "SHSetValueA") == 0 ||
              lstrcmpA(name, "GetCommandLineW") == 0 || lstrcmpA(name, "GetCommandLineA") == 0 ||
@@ -238,7 +264,10 @@ static BOOL shell_target(LPCWSTR file, LPCWSTR args, LPCWSTR dir) {
     LPCWSTR p;
     if (!shell_name(file) || !local_path(file) || !local_path(dir) || remote(args)) return FALSE;
     for(p=file;*p;++p) if(*p==L':' && p!=file+1 && !(p==file+5 && file[0]==L'\\' && file[1]==L'\\')) return FALSE;
-    if ((contains(file,L".com") || contains(file,L".cn") || contains(file,L".net") || contains(file,L".org")) && GetFileAttributesW(file)==INVALID_FILE_ATTRIBUTES) return FALSE;
+    /* A domain-shaped name can be an ordinary local file or directory.
+       Reject schemeless addresses only at the shell boundary when no such
+       local target exists; never reject filesystem access merely for www. */
+    if ((contains(file,L"www.") || contains(file,L".com") || contains(file,L".cn") || contains(file,L".net") || contains(file,L".org")) && GetFileAttributesW(file)==INVALID_FILE_ATTRIBUTES) return FALSE;
     /* Browser shortcuts can hide a URL outside the command line. */
     if (contains(file, L".url") || contains(file, L".website") || contains(file, L".hta")) return FALSE;
     return TRUE;
