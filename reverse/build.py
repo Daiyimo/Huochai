@@ -1,4 +1,4 @@
-"""Build and verify the offline package, including an isolated background engine."""
+"""Reproduce a private integration demo from separately supplied legacy inputs."""
 import atexit
 from pathlib import Path
 import argparse
@@ -26,14 +26,11 @@ from settings_patch import disable_settings_webview,save_before_shutdown
 from navigation_layout import clean_navigation_layout
 from policy import (INTENTIONALLY_ABSENT, NETWORK_APIS, NETWORK_DLLS, GUARDED_DLLS,
                     scrub_urls, url_hits)
+from build_inputs import DEFAULT_INPUTS, SOURCES, require_input, private_output
+from license_notices import copy_notices, preserved_notice
 
 ROOT = Path(__file__).resolve().parent.parent
 SOURCE_DIR = Path(__file__).resolve().parent
-SOURCE_REV = '39cf149bf9d7030a8f002b4198a9087f985c6b7a'
-SOURCES = {
-    'single': ('火柴单文件版.exe', '452541a3327935ac452504ff0355bbea801090837f626f1a82c5245e3f89ef1a'),
-    'green': ('火柴绿色版.exe', '0b32b5f393806f0c154b2b7f2ff2c93459848e85832c4584d7b3099d25e80e8b'),
-}
 GUARDS = {
     'GetTempPathW':8,'GetTempPathA':8,
     'OpenServiceW':12,
@@ -498,7 +495,7 @@ def verify(folder, require_guards=True, system32=None):
         if not p.is_file(): continue
         data=p.read_bytes(); rel=str(p.relative_to(folder))
         # The signed upstream engine is checked byte-for-byte, never scrubbed.
-        if is_official_engine(p,folder):
+        if is_official_engine(p,folder) or preserved_notice(p,folder):
             files.append({'path':rel,'size':len(data),'sha256':sha(data)});continue
         hits=url_hits(data)
         if hits: failures.append(f'{rel}: {len(hits)} URL(s), first={hits[0]}')
@@ -568,11 +565,12 @@ def verify(folder, require_guards=True, system32=None):
     if failures: raise ValueError('\n'.join(failures))
     return {'pass':True,'file_count':len(files),'files':files,'checked':f'ASCII/UTF16 URLs, nested ZIPRES, 3 compact guides, {len(REMOVED_UI_RESOURCES)} removed UI resources, manifests, imports/exports, configs, stripped components'}
 
-def prepare(source, dest):
+def prepare(source, dest, inputs=DEFAULT_INPUTS):
     dest.mkdir(parents=True)
     allowed=['HuoChat.exe','hc_engine.exe','Everything32.dll','sqlite3.dll','msvcp120.dll','msvcr120.dll','Everything.ini','duilib license.txt','everything license.txt']
     for name in allowed: shutil.copy2(source/name,dest/name)
-    prepare_sdk(dest)
+    prepare_sdk(dest,inputs)
+    copy_notices(dest)
     data_root=dest/'Data'; data_root.mkdir()
     shutil.copy2(source/'site.db',data_root/'Sites.db')
     # Keep local note backgrounds and the default skin. The removed web engine's
@@ -662,14 +660,19 @@ def package(folder, build, variant, compiler, icon, identity='HuoChatOffline'):
 
 def main():
     ap=argparse.ArgumentParser(description=__doc__)
-    ap.add_argument('--publish','--publish-single',dest='publish',action='store_true',
-                    help='Replace the root single-file package after final verification')
+    ap.add_argument('--inputs-dir',type=Path,default=DEFAULT_INPUTS,
+                    help='Separately supplied, hash-pinned legacy inputs')
+    ap.add_argument('--output-dir',type=Path,default=ROOT/'.local/integration-demo',
+                    help='Local verification output; never publishes a release')
     ap.add_argument('--keep-workdir',action='store_true',
                     help='Retain the temporary build directory and verification evidence')
     ap.add_argument('--verify',type=Path,help='Check an already extracted payload; never launches it')
     args=ap.parse_args()
     if args.verify:
         print(json.dumps(verify(args.verify),ensure_ascii=True,indent=2)); return
+    output=private_output(args.output_dir)
+    inputs={variant:require_input(args.inputs_dir/'base'/filename,expected)
+            for variant,(filename,expected) in SOURCES.items()}
     seven=Path(r'C:\Program Files\7-Zip\7z.exe'); nsis=Path(r'C:\Program Files (x86)\NSIS\makensis.exe')
     # The static deny list and the runtime list in guard.c must agree.
     check_policy_parity()
@@ -679,12 +682,12 @@ def main():
     print('Build directory:',build,flush=True)
     folders={}; originals={}
     for variant,(filename,expected) in SOURCES.items():
-        data=run(['git','show',SOURCE_REV+':'+filename],cwd=ROOT)
+        data=inputs[variant].read_bytes()
         if sha(data)!=expected: raise ValueError('Pinned source hash mismatch')
         archive=build/(variant+'-source.exe'); archive.write_bytes(data); originals[variant]=archive
         extract(archive,build/(variant+'-source'),seven)
         source=next((build/(variant+'-source')).rglob('HuoChat.exe')).parent
-        folder=build/(variant+'-files'); prepare(source,folder); folders[variant]=folder
+        folder=build/(variant+'-files'); prepare(source,folder,args.inputs_dir); folders[variant]=folder
     # The earlier single-file patch inserted NULs into an SQL string. Restore
     # only that constant from the same green binary before safe URL rewriting.
     single_main=folders['single']/'HuoChat.exe'; a=bytearray(single_main.read_bytes()); b=(folders['green']/'HuoChat.exe').read_bytes()
@@ -693,7 +696,7 @@ def main():
     if pos<0 or a[pos:pos+len(prefix)]!=prefix: raise ValueError('SQL baseline mismatch')
     end=b.index(b'\0',pos)+1; a[pos:end]=b[pos:end]; single_main.write_bytes(a)
     env=compiler_env(); compile_guards(build,[folders['single']],env)
-    compile_adapters(build,env,run,SOURCE_DIR,folders['single']/'HuoChat.exe')
+    compile_adapters(build,env,run,SOURCE_DIR,folders['single']/'HuoChat.exe',args.inputs_dir)
     for name in ('hce.dll','hc_engine.exe'):sanitize_pe(build/name,redirect=False)
     run(['cl.exe','/nologo','/utf-8','/MT','/O1','/W4',SOURCE_DIR/'launcher.c','/link','kernel32.lib','advapi32.lib','user32.lib','/SUBSYSTEM:WINDOWS','/OUT:HuoChat_launcher.exe'],cwd=build,env=env)
     sanitize_pe(build/'HuoChat_launcher.exe',redirect=False)
@@ -714,8 +717,8 @@ def main():
     run(['cl.exe','/nologo','/utf-8','/MT','/O1',SOURCE_DIR/'test_service_cleanup.c',
          '/link','kernel32.lib','advapi32.lib','user32.lib','/OUT:test_service_cleanup.exe'],cwd=build,env=env)
     print(run([build/'test_service_cleanup.exe'],cwd=build).decode('utf-8','replace'),flush=True)
-    publication=['single'] if args.publish else []
-    report={'source_revision':SOURCE_REV,'published_variants':publication,
+    report={'input_profile':'legacy-v1','input_sha256':{v:expected for v,(_,expected) in SOURCES.items()},
+            'purpose':'local integration verification','distributed':False,
             'original_targets_executed':True,
             'guard_harness_executed':True,'shell_target_harness_executed':True,'local_path_harness_executed':True,
             'engine':{'version':ENGINE_VERSION,'architecture':'x64','signed_upstream_sha256':ENGINE_SHA256},
@@ -756,6 +759,7 @@ def main():
         save_before_shutdown(folder/'HuoChat.exe')
         for p in folder.rglob('*'):
             if p.is_file() and p.suffix.lower() not in ('.exe','.dll','.db'):
+                if preserved_notice(p,folder):continue
                 text=p.suffix.lower() in ('.xml','.html','.htm','.js','.css','.json','.txt','.ini','.hyjs')
                 original=p.read_bytes(); clean,hits=scrub_urls(original,fixed_size=not text,
                     only={h['offset'] for h in url_hits(original)})
@@ -765,7 +769,7 @@ def main():
         report['engine_checks']=verify_engine(folder,build,env,run,SOURCE_DIR)
         from checkpoint_checks import verify_checkpoints
         report['checkpoint_checks']=verify_checkpoints(folder,build,env,run,SOURCE_DIR)
-        install_engine(folder,build)
+        install_engine(folder,build,args.inputs_dir)
         from backend_checks import verify_backend
         report['backend_checks']=verify_backend(folder,build,env,run,SOURCE_DIR)
         report['original_engine_executed']=True
@@ -788,26 +792,19 @@ def main():
         if any(p.name.lower()=='nsexec.dll' for p in extracted.rglob('*')):
             raise ValueError('Final package still carries the obsolete nsExec junction helper')
         for p in extracted.rglob('*'):
-            if p.is_relative_to(final) and is_official_engine(p,final):continue
+            if p.is_file() and p.is_relative_to(final) and (is_official_engine(p,final) or preserved_notice(p,final)):continue
             if p.is_file() and url_hits(p.read_bytes()): raise ValueError('URL in final archive member '+str(p))
         report['variants'][variant]={'archive':str(exe),'sha256':sha(exe.read_bytes()),'size':exe.stat().st_size,'verification':after,'changes':edits}
         print(variant+': final package verified',flush=True)
-    report['root_artifacts']={variant:{
-        'path':SOURCES[variant][0],
-        'size':report['variants'][variant]['size'],
-        'sha256':report['variants'][variant]['sha256']}
-        for variant in publication}
+    report['local_artifact']={'filename':'integration-demo.exe',
+        'size':report['variants']['single']['size'],
+        'sha256':report['variants']['single']['sha256']}
     (build/'verification.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
-    # No publication happens before the final single-file package passes.
-    if args.publish:
-        publish_variants=['single']
-        for variant in publish_variants:
-            filename,_=SOURCES[variant]
-            backup=build/(variant+'-previous-root.exe'); shutil.copy2(ROOT/filename,backup)
-        for variant in publish_variants:
-            filename,_=SOURCES[variant]
-            temporary=ROOT/(filename+'.new'); shutil.copy2(build/(variant+'.exe'),temporary); os.replace(temporary,ROOT/filename)
-        print('Published verified package(s): '+', '.join(publish_variants),flush=True)
+    output.mkdir(parents=True,exist_ok=True)
+    temporary=output/'integration-demo.exe.new'
+    shutil.copy2(build/'single.exe',temporary);os.replace(temporary,output/'integration-demo.exe')
+    shutil.copy2(build/'verification.json',output/'verification.json')
+    print('Local integration demo verified:',output,flush=True)
     if args.keep_workdir:
         print('Retained evidence:',build/'verification.json',flush=True)
     else:

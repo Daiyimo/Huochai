@@ -3,11 +3,11 @@
   "tag": "offline-2026.09.02.4",
   "accepted_on": "2026-09-02",
   "upstream_version": "2.1.0.11",
-  "source_revision": "39cf149bf9d7030a8f002b4198a9087f985c6b7a",
   "artifact": {
     "size": 4095619,
     "sha256": "0c040ab92708a852c833b03f085395610484d3202769ddf6e9b7c06512369e80",
-    "filename": "火柴单文件版.exe"
+    "filename": "火柴单文件版.exe",
+    "availability": "private verification record only; no binary download"
   },
   "changes": [
     "修复设置保存、托盘退出与快速重开。",
@@ -24,5 +24,7 @@
       "便携路径、迁移、自启动及打包"
     ],
     "scope": "发布时的自动化构建与回归结果，不代表完整桌面操作验收。"
-  }
+  },
+  "record_type": "historical integration experiment",
+  "binary_distribution": "not part of this source-only case study"
 }

@@ -9,3 +9,13 @@ HuoChatOffline-v1-*/
 
 # 本机诊断、日志与私有备份
 /.local/
+
+# 仅分享源码与分析；二进制输入和验证产物不入库
+*.exe
+*.dll
+*.zip
+*.7z
+*.msi
+*.pdb
+*.obj
+*.lib

@@ -1,0 +1,2 @@
+# Keep upstream notice bytes intact on every checkout.
+/third_party/licenses/*.txt -text -whitespace

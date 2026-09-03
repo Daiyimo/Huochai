@@ -95,7 +95,10 @@ B64_WIDE = re.compile(rb'(?:(?<![A-Za-z0-9+/=]\x00)[A-Za-z0-9+/]\x00){24,}={0,2}
 # A bare hostname is not by itself a network address: these binaries are full of
 # source filenames ("win.cc"), protobuf type URLs ("type.googleapis.com") and
 # library identifiers that merely look like hosts. Only the entries below are
-# confirmed business endpoints, so the general bare-domain rule stays advisory.
+# sample-specific matches retained for teaching and regression coverage. Their
+# presence is not evidence of malicious behavior or permission to remove legal
+# notices; license_notices.py preserves upstream notices outside this scanner.
+# The general bare-domain rule stays advisory.
 BARE_DENYLIST = (
     'huochaipro.com', 'huoying666.com', 'baidu.com', 'baiduwp.com',
     'voidtools.com', 'w3.org', 'google.com', 'googleprod.com',

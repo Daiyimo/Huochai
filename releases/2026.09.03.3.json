@@ -2,11 +2,11 @@
   "version": "2026.09.03.3",
   "built_on": "2026-09-03",
   "upstream_version": "2.1.0.11",
-  "source_revision": "39cf149bf9d7030a8f002b4198a9087f985c6b7a",
   "artifact": {
     "filename": "火柴单文件版.exe",
     "size": 5340571,
-    "sha256": "a6ac35f6c25a0e41635da0ad4f9d8b2763d42fdfc0ac1f5e590e3adf3f35840d"
+    "sha256": "a6ac35f6c25a0e41635da0ad4f9d8b2763d42fdfc0ac1f5e590e3adf3f35840d",
+    "availability": "private verification record only; no binary download"
   },
   "engine": {
     "version": "1.5.0.1423b",
@@ -31,5 +31,7 @@
   },
   "known_issues": [
     "外部应用继承便携环境后，其缓存可能在火柴退出后继续占用目录；已在 2026.09.03.4 修复。"
-  ]
+  ],
+  "record_type": "historical integration experiment",
+  "binary_distribution": "not part of this source-only case study"
 }

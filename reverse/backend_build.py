@@ -3,22 +3,20 @@ import hashlib
 from pathlib import Path
 import shutil
 import pefile
+from build_inputs import DEFAULT_INPUTS, require_input
 
 ENGINE_VERSION='1.5.0.1423b'
 ENGINE_SHA256='81b4d05e84e61891ac043dd76e97de616af17adf53b2ee2fe984d8b0bbbfcc21'
 SDK_SHA256='1ffe69d856a8a071a7531d54d7b05ae04a87814b812e649521a67a606c7f93e0'
-VENDOR=Path(__file__).resolve().parent/'vendor'
 
-def pinned(name,digest):
-    path=VENDOR/name
-    if hashlib.sha256(path.read_bytes()).hexdigest()!=digest:raise ValueError('Pinned upstream hash mismatch: '+name)
-    return path
+def pinned(name,digest,inputs=DEFAULT_INPUTS):
+    return require_input(Path(inputs)/'vendor'/name,digest)
 
-def prepare_sdk(folder):
-    shutil.copy2(pinned('Everything32.upstream.dll',SDK_SHA256),folder/'Everything32.dll')
+def prepare_sdk(folder,inputs=DEFAULT_INPUTS):
+    shutil.copy2(pinned('Everything32.upstream.dll',SDK_SHA256,inputs),folder/'Everything32.dll')
 
-def compile_adapters(build,env,run,source,application):
-    sdk=pinned('Everything32.upstream.dll',SDK_SHA256)
+def compile_adapters(build,env,run,source,application,inputs=DEFAULT_INPUTS):
+    sdk=pinned('Everything32.upstream.dll',SDK_SHA256,inputs)
     names=set()
     # The original search UI sends IPC v1 itself, bypassing the SDK. Both
     # consumers must use the same instance lookup, with all other APIs forwarded.
@@ -46,9 +44,9 @@ def route_windows(path):
     if changed!=1:raise ValueError('USER32 routing input drifted: '+str(path))
     pe=pefile.PE(data=raw);pe.OPTIONAL_HEADER.CheckSum=pe.generate_checksum();path.write_bytes(pe.write());pe.close()
 
-def install_engine(folder,build):
+def install_engine(folder,build,inputs=DEFAULT_INPUTS):
     engine=folder/'Engine';engine.mkdir()
-    shutil.copy2(pinned('Everything-'+ENGINE_VERSION+'.x64.exe',ENGINE_SHA256),engine/'Everything.exe')
+    shutil.copy2(pinned('Everything-'+ENGINE_VERSION+'.x64.exe',ENGINE_SHA256,inputs),engine/'Everything.exe')
     shutil.copy2(build/'hc_engine.exe',folder/'hc_engine.exe')
 
 def is_official_engine(path,folder):
