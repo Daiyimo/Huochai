@@ -6,3 +6,6 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 HuoChatOffline-v1-*/
+
+# 本机诊断、日志与私有备份
+/.local/
