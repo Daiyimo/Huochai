@@ -21,6 +21,8 @@ python reverse/demo.py
 
 该 demo 从仓库中的自编 C 样例生成 PE，验证导入表重定向、API hook 和定长 URL 清洗，无需火柴或 Everything 二进制。工具依赖和步骤见 [构建说明](docs/build.md)。
 
+需要比较多个模型时，使用 [Benchmark 协议](benchmark/README.md) 生成不含答案的 T1/T2/T3 starter，并以固定硬门槛、100 分量表和独立运行指标评测。
+
 产物只写入被 Git 忽略的 `.local/demo/`，仅供技术验证。本仓库不提供安装包、修改版 EXE 或加密下载；GitHub Releases 也不作为二进制分发渠道。
 
 ## 第三方组件

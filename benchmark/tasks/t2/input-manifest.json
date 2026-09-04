@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "files": [
+    {"path": "base/火柴单文件版.exe", "sha256": "452541a3327935ac452504ff0355bbea801090837f626f1a82c5245e3f89ef1a"},
+    {"path": "base/火柴绿色版.exe", "sha256": "0b32b5f393806f0c154b2b7f2ff2c93459848e85832c4584d7b3099d25e80e8b"},
+    {"path": "vendor/Everything-1.5.0.1423b.x64.exe", "sha256": "81b4d05e84e61891ac043dd76e97de616af17adf53b2ee2fe984d8b0bbbfcc21"},
+    {"path": "vendor/Everything32.upstream.dll", "sha256": "1ffe69d856a8a071a7531d54d7b05ae04a87814b812e649521a67a606c7f93e0"}
+  ]
+}

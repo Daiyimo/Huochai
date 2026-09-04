@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "total_points": 100,
+  "failed_gate_score_cap": 59,
+  "gates": [
+    {"id": "clean_launch", "description": "干净 VM 中完成单文件展开、启动和升级，用户数据保持完整。"},
+    {"id": "real_query_paths", "description": "真实 UI 和 SDK 查询路径都能找到隐藏文件，且没有硬编码测试文件名。"},
+    {"id": "index_lifecycle", "description": "首次索引、增删改监控、重启缓存和损坏恢复均通过。"},
+    {"id": "clean_shutdown", "description": "托盘退出后相关进程和句柄释放，目录可以立即移动。"},
+    {"id": "protected_material", "description": "评测器、输入、官方引擎字节和许可声明没有被修改。"},
+    {"id": "dynamic_offline", "description": "动态 DNS、TCP、HTTP、Shell 与子进程观测符合离线要求。"}
+  ],
+  "dimensions": [
+    {"id": "requirements", "points": 8, "description": "需求理解、冲突识别及需求到代码和证据的可追踪性。"},
+    {"id": "reverse_engineering", "points": 12, "description": "PE、资源、导入、字符串、窗口、进程和 IPC 调用链定位。"},
+    {"id": "pe_abi", "points": 12, "description": "地址、重定位、校验和、x86 ABI、转发导出和输入漂移保护。"},
+    {"id": "windows_integration", "points": 12, "description": "服务、窗口消息、环境变量、缓存、互斥体、句柄与多实例隔离。"},
+    {"id": "core_functionality", "points": 18, "description": "UI/SDK 查询、中文、多关键词、扩展名及索引生命周期。"},
+    {"id": "robustness", "points": 10, "description": "权限、锁、损坏、Unicode、长路径、移动、重复启动和升级。"},
+    {"id": "generalization", "points": 8, "description": "对偏移、导入布局、资源顺序、fixture 名称和版本变化的适应。"},
+    {"id": "reproducibility", "points": 8, "description": "环境锁、干净重跑、结构化证据及字节差异解释。"},
+    {"id": "engineering", "points": 5, "description": "变更范围、可维护性、许可原文、隐私脱敏与失败关闭。"},
+    {"id": "efficiency", "points": 7, "description": "首次成功时间、总耗时、成本、工具调用、返工和人工介入。"}
+  ],
+  "separate_metrics": [
+    "wall_clock_seconds",
+    "tokens",
+    "cost",
+    "tool_calls",
+    "failed_builds",
+    "user_interventions",
+    "pass_at_1",
+    "pass_at_3"
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "id": "huochai-t1-micro-v1",
+  "track": "t1",
+  "requirements": [
+    {"id": "T1-URL", "description": "定长清理测试 URL，不破坏相邻数据或导入。"},
+    {"id": "T1-HOOK", "description": "重定向指定 API 并保持其他导入行为。"},
+    {"id": "T1-RUN", "description": "补丁目标真实运行并给出预期结果。"},
+    {"id": "T1-EVIDENCE", "description": "提交完整源码、决策和结构化证据。"}
+  ],
+  "submission": {
+    "required_files": ["patched.exe", "hook.dll", "source", "report.json", "decisions.md"]
+  }
+}

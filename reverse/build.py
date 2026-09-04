@@ -122,6 +122,10 @@ def compiler_env():
     env['PATH']=str(msvc/'bin'/'Hostx64'/'x86')+os.pathsep+env.get('PATH','')
     env['INCLUDE']=os.pathsep.join(map(str,[msvc/'include']+[sdk/'Include'/version/x for x in ('ucrt','shared','um','winrt')]))
     env['LIB']=os.pathsep.join(map(str,[msvc/'lib'/'x86',sdk/'Lib'/version/'ucrt'/'x86',sdk/'Lib'/version/'um'/'x86']))
+    # link.exe reads the LINK environment variable for every invocation. /Brepro
+    # removes the wall-clock timestamp from generated PE files, including native
+    # fixtures compiled by the integration checks.
+    env['LINK']=(env.get('LINK','')+' /Brepro').strip()
     return env
 
 def extract(exe, dest, seven):

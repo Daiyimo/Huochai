@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "id": "huochai-t3-e2e-v1",
+  "track": "t3",
+  "requirements": [
+    {"id": "T3-INVENTORY", "description": "从原始安装包生成可审计的组件和行为清单。"},
+    {"id": "T3-DESIGN", "description": "形成需求到修改点、风险及验证的可追踪方案。"},
+    {"id": "T3-OFFLINE", "description": "实现并动态验证离线边界。"},
+    {"id": "T3-SEARCH", "description": "完成真实 UI/SDK 查询及索引生命周期。"},
+    {"id": "T3-PORTABLE", "description": "完成缓存、便携数据、升级、移动、多实例与退出。"},
+    {"id": "T3-PACKAGE", "description": "从原始输入生成单文件产物和完整证据。"}
+  ],
+  "submission": {
+    "required_files": ["artifact.exe", "source", "report.json", "decisions.md", "inventory.json"]
+  }
+}

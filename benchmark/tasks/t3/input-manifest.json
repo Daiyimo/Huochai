@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "files": [
+    {"path": "base/hc_GC5H6A_v2.1.0.11.exe", "sha256": "69f4b8343731b9bcac7c4dccc43e8c42710574fc2b1ef22755641fd9f0333042"},
+    {"path": "vendor/Everything-1.5.0.1423b.x64.exe", "sha256": "81b4d05e84e61891ac043dd76e97de616af17adf53b2ee2fe984d8b0bbbfcc21"},
+    {"path": "vendor/Everything32.upstream.dll", "sha256": "1ffe69d856a8a071a7531d54d7b05ae04a87814b812e649521a67a606c7f93e0"}
+  ]
+}

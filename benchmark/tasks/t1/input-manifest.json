@@ -1,0 +1,5 @@
+{
+  "schema_version": 1,
+  "generated": true,
+  "description": "prepare_starter.py writes the seed-specific hash, URL, target API and expected value into the private starter."
+}

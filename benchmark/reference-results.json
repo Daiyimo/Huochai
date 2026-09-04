@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "environment": "environment.lock.json",
+  "t1": {
+    "same_seed_fixture_bytes_reproducible": true,
+    "reference_submission_black_box_passed": true,
+    "black_box_check_count": 8,
+    "demo_two_run_semantic_reproducible": true,
+    "demo_two_run_byte_reproducible": true
+  },
+  "t2": {
+    "full_integration_functional_runs_passed": 2,
+    "full_integration_artifact_byte_reproducible": false,
+    "note": "Both successful runs passed payload verification; the final NSIS artifacts differed in size and SHA-256."
+  },
+  "t3": {
+    "original_installer_sha256_verified": true,
+    "normalized_without_execution": true,
+    "main_application_entry_found": true,
+    "end_to_end_solution_provided": false
+  },
+  "regressions": {
+    "empty_pid_polling_window": "covered",
+    "windows_short_path_process_cleanup": "covered",
+    "transient_executable_handle_cleanup": "covered"
+  }
+}

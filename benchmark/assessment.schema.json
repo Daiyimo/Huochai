@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["schema_version", "task_id", "gates", "dimensions", "metrics"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "task_id": {"type": "string"},
+    "gates": {"type": "object"},
+    "dimensions": {"type": "object"},
+    "metrics": {"type": "object"}
+  }
+}

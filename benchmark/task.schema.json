@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["schema_version", "id", "track", "requirements", "submission"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "id": {"type": "string"},
+    "track": {"enum": ["t1", "t2", "t3"]},
+    "requirements": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "description"],
+        "properties": {"id": {"type": "string"}, "description": {"type": "string"}}
+      }
+    },
+    "submission": {
+      "type": "object",
+      "required": ["required_files"],
+      "properties": {"required_files": {"type": "array", "items": {"type": "string"}}}
+    }
+  }
+}

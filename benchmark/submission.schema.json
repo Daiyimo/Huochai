@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["schema_version", "task_id", "requirements", "known_limitations"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "task_id": {"type": "string"},
+    "requirements": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "implementation", "evidence"],
+        "properties": {
+          "id": {"type": "string"},
+          "implementation": {"type": "string"},
+          "evidence": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "known_limitations": {"type": "array", "items": {"type": "string"}},
+    "metrics": {"type": "object"}
+  }
+}

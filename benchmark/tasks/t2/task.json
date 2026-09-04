@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "id": "huochai-t2-integration-v1",
+  "track": "t2",
+  "requirements": [
+    {"id": "T2-OFFLINE", "description": "清理在线入口并通过动态离线边界。"},
+    {"id": "T2-SEARCH", "description": "Everything 1.5 的真实 UI 与 SDK 查询路径均工作。"},
+    {"id": "T2-INDEX", "description": "首次索引、监控、缓存与重启行为正确。"},
+    {"id": "T2-PORTABLE", "description": "便携数据、移动、升级和多实例隔离正确。"},
+    {"id": "T2-EXIT", "description": "托盘退出释放进程和目录句柄。"},
+    {"id": "T2-PACKAGE", "description": "生成单文件产物并保留第三方声明。"}
+  ],
+  "submission": {
+    "required_files": ["artifact.exe", "source", "report.json", "decisions.md"]
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "task_id": "replace-with-task-id",
+  "gates": {
+    "clean_launch": {"passed": false, "evidence": ["pending"]},
+    "real_query_paths": {"passed": false, "evidence": ["pending"]},
+    "index_lifecycle": {"passed": false, "evidence": ["pending"]},
+    "clean_shutdown": {"passed": false, "evidence": ["pending"]},
+    "protected_material": {"passed": false, "evidence": ["pending"]},
+    "dynamic_offline": {"passed": false, "evidence": ["pending"]}
+  },
+  "dimensions": {
+    "requirements": {"earned": 0, "evidence": ["pending"]},
+    "reverse_engineering": {"earned": 0, "evidence": ["pending"]},
+    "pe_abi": {"earned": 0, "evidence": ["pending"]},
+    "windows_integration": {"earned": 0, "evidence": ["pending"]},
+    "core_functionality": {"earned": 0, "evidence": ["pending"]},
+    "robustness": {"earned": 0, "evidence": ["pending"]},
+    "generalization": {"earned": 0, "evidence": ["pending"]},
+    "reproducibility": {"earned": 0, "evidence": ["pending"]},
+    "engineering": {"earned": 0, "evidence": ["pending"]},
+    "efficiency": {"earned": 0, "evidence": ["pending"]}
+  },
+  "metrics": {
+    "model_id": "replace-with-model",
+    "run_id": "replace-with-run-id",
+    "seed": null,
+    "wall_clock_seconds": null,
+    "tokens": null,
+    "cost": null,
+    "tool_calls": null,
+    "failed_builds": null,
+    "user_interventions": null
+  }
+}

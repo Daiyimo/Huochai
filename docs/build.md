@@ -8,11 +8,23 @@
 python -m pip install pefile Pillow pycryptodome psutil
 python reverse/demo.py
 python -m unittest discover -s reverse -p "test_*.py" -v
+python -m unittest discover -s benchmark -p "test_*.py" -v
 ```
 
 `demo.py` 编译自编的 `demo_fixture.c` 和 `demo_hook.c`，生成原始 PE，再执行定长 URL 清洗和导入表重定向。它实际运行补丁前后的样例，并验证目标 API 已被接管。
 
 输出位于 `.local/demo/`：原始样例、补丁样例、hook DLL 和 `verification.json`。没有原软件输入也能完成这条流程；无需安装 Everything 服务或索引磁盘。可用 `--output-dir` 指定仓库外的本地目录。
+
+MSVC 链接器统一使用 `/Brepro`。可执行两次构建并分别比较标准输出和产物字节：
+
+```powershell
+python benchmark/tools/check_reproducibility.py `
+  --output .local/repro-demo-001 --runs 2 `
+  --artifact demo-original.exe --artifact demo-patched.exe --artifact demohook.dll `
+  -- python reverse/demo.py --output-dir "{output}"
+```
+
+模型对比所需的 starter、输入归一化和评分工具见 [Benchmark 文档](../benchmark/README.md)。
 
 ## 历史集成实验
 

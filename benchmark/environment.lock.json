@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "kind": "validated reference environment",
+  "platform": {
+    "os": "Windows 11",
+    "build": "10.0.26100.0",
+    "architecture": "x64"
+  },
+  "toolchain": {
+    "python": "3.12.10",
+    "visual_studio": "17.14.31",
+    "windows_sdk": "10.0.26100.0",
+    "seven_zip": "26.02",
+    "nsis": "3.12"
+  },
+  "python_packages": {
+    "pefile": "2024.8.26",
+    "Pillow": "12.2.0",
+    "pycryptodome": "3.23.0",
+    "psutil": "7.2.2"
+  },
+  "comparison_policy": {
+    "same_vm_snapshot": true,
+    "same_network_policy": true,
+    "same_tool_access": true,
+    "minimum_independent_runs": 3,
+    "report_semantic_and_byte_reproducibility_separately": true
+  }
+}
