@@ -94,14 +94,17 @@ def cleanup_build_dir(path):
     path=Path(path).resolve()
     if path.parent!=Path(tempfile.gettempdir()).resolve() or not path.name.startswith('huochai_offline_build_'):
         raise ValueError('Refusing to clean a directory outside the allocated build workspace')
-    for attempt in range(20):
+    # Recently executed PE files can remain briefly held after child processes
+    # exit. Long waits usually indicate a leaked process handle in a test and
+    # should remain visible instead of being hidden by the cleanup routine.
+    for attempt in range(80):
         try:
             shutil.rmtree(path)
             return
         except FileNotFoundError:
             return
         except OSError as exc:
-            if attempt == 19:
+            if attempt == 79:
                 print('Warning: could not remove temporary build directory '
                       f'{path}: {exc}', file=sys.stderr, flush=True)
                 return
