@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <shlobj.h>
+#include <shobjidl.h>
 #include <objbase.h>
 #include <shlwapi.h>
 #include "startup.h"
@@ -38,6 +39,64 @@ static BOOL wide(LPCSTR text, WCHAR *out, int count) {
     if (!text) { out[0] = 0; return TRUE; }
     return MultiByteToWideChar(CP_ACP, 0, text, -1, out, count) != 0;
 }
+/* Last component of a path, using the shell's separators. Matching tokens
+   against this instead of the whole string keeps a directory called
+   "node.dll.bak" (or "MyNode.dll") from being treated as a module name. */
+static LPCWSTR file_name_of(LPCWSTR p) {
+    LPCWSTR last = p;
+    if (!p) return p;
+    for (; *p; ++p) if (*p == L'\\' || *p == L'/') last = p + 1;
+    return last;
+}
+/* Whole-name match for a module token. A substring test would refuse
+   "notanode.dll" (it ends in "node.dll") and "mshtmlful.dll"; both are
+   ordinary modules that have nothing to do with the removed web engine. */
+static BOOL module_named(LPCWSTR path, LPCWSTR token) {
+    LPCWSTR p = file_name_of(path), q;
+    if (!p || !token) return FALSE;
+    for (q = token; *q && *p && lower(*p) == lower(*q); ++p, ++q) {}
+    if (*q) return FALSE;               /* the name is shorter than the token */
+    return *p == 0 || *p == L'.';       /* or longer: a different module */
+}
+/* Shell-namespace items (::{GUID}) are virtual objects: they can never be a
+   file on disk, a UNC share or a URL. Everything still resolves them through
+   the shell itself, so the drive-letter rules below must not reject them --
+   doing so turns "open Recycle Bin" into the shell's "choose an app" dialog.
+   Only a bare GUID is accepted: anything appended (a traversal segment, an
+   extra colon) falls through to the ordinary rules and is rejected there. */
+static BOOL shell_namespace(LPCWSTR p) {
+    DWORD i;
+    if (!p || p[0] != L':' || p[1] != L':' || p[2] != L'{') return FALSE;
+    for (i = 3; p[i] && p[i] != L'}'; ++i) {}
+    return p[i] == L'}' && p[i+1] == 0;
+}
+/* Reads a path the way the shell does. Surrounding quotes are removed before
+   any rule runs: without this, "\"C:\\dir\\app.exe\"" would fail the
+   drive-letter test, and "\"\\\\server\\share\\t.exe\"" would slip past the
+   UNC rejection below. Unquoted input is used in place, so the length limit of
+   the caller is unchanged. */
+static BOOL unwrap_path(LPCWSTR file, WCHAR *buf, DWORD count, LPCWSTR *out) {
+    DWORD n;
+    if (!file) return FALSE;
+    n = lstrlenW(file);
+    if (n < 2 || file[0] != L'"' || file[n-1] != L'"') { *out = file; return TRUE; }
+    n -= 2;
+    if (n >= count) return FALSE;
+    CopyMemory(buf, file + 1, n * sizeof(WCHAR));
+    buf[n] = 0;
+    *out = buf;
+    return TRUE;
+}
+/* The leaf of a target must contain a visible character. Component names
+   disabled by stub_component_names become spaces, and Windows answers that
+   with its own "file not found" dialog even though the feature was removed. */
+static BOOL visible_leaf(LPCWSTR s) {
+    LPCWSTR leaf = s, p;
+    if (!s) return FALSE;
+    for (p = s; *p; ++p) if (*p == L'\\' || *p == L'/' || *p == L':') leaf = p + 1;
+    for (p = leaf; *p; ++p) if (*p > L' ') return TRUE;
+    return FALSE;
+}
 static BOOL remote(LPCWSTR text) {
     if (!text) return FALSE;
     return contains(text, L"://") || contains(text, L"mailto:") ||
@@ -68,9 +127,8 @@ static BOOL local_a(LPCSTR path) {
 }
 /* Kept in step with policy.NETWORK_DLLS; build.py asserts the two agree. */
 static BOOL network_module(LPCWSTR name) {
-    LPCWSTR base = name, p;
-    if (!name) return FALSE;
-    for (p = name; *p; ++p) if (*p == L'\\' || *p == L'/') base = p + 1;
+    LPCWSTR base = file_name_of(name), p;
+    if (!base) return FALSE;
     return contains(base, L"wininet") || contains(base, L"winhttp") ||
         contains(base, L"ws2_32") || contains(base, L"wsock32") ||
         contains(base, L"urlmon") || contains(base, L"dnsapi") ||
@@ -86,25 +144,16 @@ static BOOL network_module(LPCWSTR name) {
         contains(base, L"netiohlp.dll") || contains(base, L"wsnmp32.dll");
 }
 static HMODULE net_stub(void) {
-    WCHAR path[1024]; DWORD n, i;
-    const WCHAR name[] = L"hcn.dll";
-    n = GetModuleFileNameW(self_module, path, 1024);
-    if (!n || n >= 1015) return NULL;
-    while (n && path[n-1] != L'\\' && path[n-1] != L'/') --n;
-    for (i = 0; i < sizeof(name)/sizeof(WCHAR); ++i) path[n+i] = name[i];
+    WCHAR path[PATH_CAP];
+    if (!module_dir(self_module, path, PATH_CAP)) return NULL;
+    if (FAILED(StringCchCatW(path, PATH_CAP, L"hcn.dll"))) return NULL;
     return LoadLibraryExW(path, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
 }
 
 /* Only modules using this guard resolve their own AppData/temp to Data.
    External applications inherit the unchanged caller environment. */
 static BOOL portable_dir_w(WCHAR *out, DWORD count) {
-    DWORD n;
-    if (!out || count < 4) return FALSE;
-    n = GetModuleFileNameW(self_module, out, count);
-    if (!n || n >= count) return FALSE;
-    while (n && out[n-1] != L'\\' && out[n-1] != L'/') --n;
-    if (!n) return FALSE;
-    out[n] = 0;
+    if (!module_dir(self_module, out, count)) return FALSE;
     return SUCCEEDED(StringCchCatW(out,count,L"Data"));
 }
 static BOOL portable_dir_a(CHAR *out, DWORD count) {
@@ -115,7 +164,13 @@ static BOOL portable_dir_a(CHAR *out, DWORD count) {
 
 DWORD WINAPI Guard_GetTempPathW(DWORD count,LPWSTR out) {
     WCHAR path[PATH_CAP];DWORD length;
-    if(!portable_dir_w(path,PATH_CAP) || FAILED(StringCchCatW(path,PATH_CAP,L"\\Temp\\")))return 0;
+    if(!portable_dir_w(path,PATH_CAP) || FAILED(StringCchCatW(path,PATH_CAP,L"\\Temp\\"))) {
+        SetLastError(ERROR_DIRECTORY); return 0;
+    }
+    /* Callers write temp files here. Creating it up front turns a late
+       create-file failure into a success; an existing directory just returns
+       ERROR_ALREADY_EXISTS, which this deliberately ignores. */
+    CreateDirectoryW(path,NULL);
     length=(DWORD)wcslen(path);
     if(count<=length)return length+1;
     if(!out){SetLastError(ERROR_INVALID_PARAMETER);return 0;}
@@ -176,7 +231,9 @@ HRESULT WINAPI Guard_SHGetKnownFolderPath(REFKNOWNFOLDERID id,DWORD flags,HANDLE
     WCHAR local[MAX_PATH]; SIZE_T bytes; PWSTR copy;
     (void)flags; (void)token;
     if (!portable_known_folder(id)) return SHGetKnownFolderPath(id,flags,token,path);
-    if (!path || !portable_dir_w(local,MAX_PATH)) return E_FAIL;
+    /* The contract requires *path to be NULL on failure; a caller that only
+       inspects *path would otherwise follow an uninitialised pointer. */
+    if (!path || !portable_dir_w(local,MAX_PATH)) { if (path) *path=NULL; return E_FAIL; }
     bytes=((SIZE_T)lstrlenW(local)+1)*sizeof(WCHAR);
     copy=(PWSTR)CoTaskMemAlloc(bytes);
     if (!copy) { *path=NULL; return E_OUTOFMEMORY; }
@@ -187,8 +244,11 @@ HRESULT WINAPI Guard_SHGetKnownFolderPath(REFKNOWNFOLDERID id,DWORD flags,HANDLE
 HMODULE WINAPI Guard_LoadLibraryExW(LPCWSTR name, HANDLE file, DWORD flags) {
     if (!local_path(name)) { SetLastError(ERROR_ACCESS_DENIED); return NULL; }
     /* Missing optional web components must remain missing; a fake handle would
-       let legacy code call absent wke/COM exports through a null pointer. */
-    if (contains(name,L"node.dll") || contains(name,L"mshtml") || contains(name,L"msxml") || contains(name,L"ieframe")) {
+       let legacy code call absent wke/COM exports through a null pointer.
+       Match the module name on its own and as a whole: "node.dll" must not
+       pick up "notanode.dll", and "mshtml" must not pick up "mshtmlful.dll". */
+    if (module_named(name,L"node.dll") || module_named(name,L"mshtml") ||
+        module_named(name,L"msxml") || module_named(name,L"ieframe")) {
         SetLastError(ERROR_ACCESS_DENIED); return NULL;
     }
     if (network_module(name)) return net_stub();
@@ -202,38 +262,51 @@ HMODULE WINAPI Guard_LoadLibraryExA(LPCSTR name, HANDLE file, DWORD flags) {
 }
 HMODULE WINAPI Guard_LoadLibraryA(LPCSTR name) { return Guard_LoadLibraryExA(name, NULL, 0); }
 
+/* Dynamic resolution must not bypass the guarded kernel/shell/COM exports.
+   This table is the single source of truth for what hcg intercepts; build.py's
+   check_policy_parity() asserts it matches the GUARDS table, so a name added
+   there and missing here (or the reverse) fails the build instead of silently
+   opening a hole. */
+static const char *const GUARDED_EXPORTS[] = {
+    "LoadLibraryA","LoadLibraryW","LoadLibraryExA","LoadLibraryExW",
+    "GetProcAddress",
+    "ShellExecuteA","ShellExecuteW","ShellExecuteExW","ShellExecuteExA",
+    "CreateProcessA","CreateProcessW","WinExec",
+    "OpenServiceW",
+    "CoCreateInstance","CoGetClassObject","CLSIDFromProgID",
+    "CreateFileA","CreateFileW",
+    "GetFileAttributesA","GetFileAttributesW",
+    "FindFirstFileA","FindFirstFileW","FindFirstFileExA","FindFirstFileExW",
+    "SHGetFolderPathA","SHGetFolderPathW",
+    "SHGetSpecialFolderPathA","SHGetSpecialFolderPathW","SHGetKnownFolderPath",
+    "GetTempPathW","GetTempPathA",
+    "RegSetValueExW","RegSetValueExA","SHSetValueW","SHSetValueA",
+    "GetCommandLineW","GetCommandLineA",
+    "Shell_NotifyIconW","Shell_NotifyIconA",
+};
+static BOOL guarded_export(LPCSTR name) {
+    unsigned i;
+    for (i = 0; i < sizeof(GUARDED_EXPORTS)/sizeof(GUARDED_EXPORTS[0]); ++i)
+        if (lstrcmpA(name, GUARDED_EXPORTS[i]) == 0) return TRUE;
+    return FALSE;
+}
+
 FARPROC WINAPI Guard_GetProcAddress(HMODULE module, LPCSTR name) {
-    WCHAR path[1024]; HMODULE guard, net; FARPROC proc;
-    if (GetModuleFileNameW(module, path, 1024) && network_module(path)) {
+    WCHAR path[1024]; DWORD n; HMODULE guard, net; FARPROC proc;
+    /* A truncated module name would let network_module() read past the
+       buffer, so treat truncation as "not a network module" and reject. */
+    n = GetModuleFileNameW(module, path, 1024);
+    if (n && n < 1024 && network_module(path)) {
         if ((ULONG_PTR)name <= 0xffff) { SetLastError(ERROR_PROC_NOT_FOUND); return NULL; }
         net = net_stub();
         return net ? GetProcAddress(net, name) : NULL;
     }
     /* Dynamic resolution must not bypass guarded kernel/shell/COM exports. */
-    if ((ULONG_PTR)name > 0xffff) {
+    if ((ULONG_PTR)name > 0xffff && guarded_export(name)) {
         guard = self_module;
-        if (lstrcmpA(name, "LoadLibraryA") == 0 || lstrcmpA(name, "LoadLibraryW") == 0 ||
-            lstrcmpA(name, "LoadLibraryExA") == 0 || lstrcmpA(name, "LoadLibraryExW") == 0 ||
-            lstrcmpA(name, "GetProcAddress") == 0 || lstrcmpA(name, "ShellExecuteA") == 0 ||
-            lstrcmpA(name, "ShellExecuteW") == 0 || lstrcmpA(name, "ShellExecuteExW") == 0 ||
-            lstrcmpA(name, "ShellExecuteExA") == 0 || lstrcmpA(name, "CoCreateInstance") == 0 ||
-            lstrcmpA(name, "CoGetClassObject") == 0 || lstrcmpA(name, "CLSIDFromProgID") == 0 ||
-             lstrcmpA(name, "CreateFileA") == 0 || lstrcmpA(name, "CreateFileW") == 0 ||
-             lstrcmpA(name, "GetFileAttributesA") == 0 || lstrcmpA(name, "GetFileAttributesW") == 0 ||
-             lstrcmpA(name, "FindFirstFileA") == 0 || lstrcmpA(name, "FindFirstFileW") == 0 ||
-             lstrcmpA(name, "FindFirstFileExA") == 0 || lstrcmpA(name, "FindFirstFileExW") == 0 ||
-             lstrcmpA(name, "SHGetFolderPathA") == 0 || lstrcmpA(name, "SHGetFolderPathW") == 0 ||
-             lstrcmpA(name, "SHGetSpecialFolderPathA") == 0 || lstrcmpA(name, "SHGetSpecialFolderPathW") == 0 ||
-             lstrcmpA(name, "SHGetKnownFolderPath") == 0 ||
-             lstrcmpA(name, "GetTempPathW") == 0 || lstrcmpA(name, "GetTempPathA") == 0 ||
-             lstrcmpA(name, "RegSetValueExW") == 0 || lstrcmpA(name, "RegSetValueExA") == 0 ||
-             lstrcmpA(name, "SHSetValueW") == 0 || lstrcmpA(name, "SHSetValueA") == 0 ||
-             lstrcmpA(name, "GetCommandLineW") == 0 || lstrcmpA(name, "GetCommandLineA") == 0 ||
-             lstrcmpA(name, "Shell_NotifyIconW") == 0 || lstrcmpA(name, "Shell_NotifyIconA") == 0) {
-            proc = GetProcAddress(guard, name);
-            if (!proc) SetLastError(ERROR_PROC_NOT_FOUND);
-            return proc;
-        }
+        proc = GetProcAddress(guard, name);
+        if (!proc) SetLastError(ERROR_PROC_NOT_FOUND);
+        return proc;
     }
     return GetProcAddress(module, name);
 }
@@ -243,9 +316,6 @@ static BOOL shell_name(LPCWSTR file) {
     if (!file || !*file) return FALSE;
     first = file;
     end = file + lstrlenW(file);
-    if (end - first >= 2 && *first == L'"' && end[-1] == L'"') {
-        ++first; --end;
-    }
     if (first == end) return FALSE;
     leaf = first;
     for (p = first; p < end; ++p)
@@ -260,16 +330,53 @@ static BOOL shell_name(LPCWSTR file) {
     return FALSE;
 }
 
+/* SIGDN_DESKTOPABSOLUTEPARSING, spelled out because it lives in shobjidl.h.
+   This is the name the shell itself uses to locate an item. */
+#define GUARD_SIGDN_PARSING 0x80028000u
+/* Resolve a SEE_MASK_IDLIST request to a wide string the rules can judge.
+   A shell-namespace item has no filesystem path at all -- SHGetPathFromIDListW
+   fails for it by design -- so refusing the request on that basis turns
+   "open Recycle Bin" into the shell's choose-an-app dialog. Take the parsing
+   name instead: for a share it starts with \\ and local_path() still refuses
+   it, and for a namespace item it starts with ::{ and is judged as one. */
+static BOOL idlist_target(LPCVOID pidl, WCHAR *buf, DWORD count, LPCWSTR *out) {
+    PWSTR owned = NULL;
+    DWORD n;
+    if (!pidl) return FALSE;
+    if (SHGetPathFromIDListW((LPCITEMIDLIST)pidl, buf)) { *out = buf; return TRUE; }
+    if (FAILED(SHGetNameFromIDList((LPCITEMIDLIST)pidl, GUARD_SIGDN_PARSING, &owned)) || !owned)
+        return FALSE;
+    n = (DWORD)lstrlenW(owned);
+    if (n >= count) { CoTaskMemFree(owned); return FALSE; }
+    CopyMemory(buf, owned, n * sizeof(WCHAR));
+    buf[n] = 0;
+    CoTaskMemFree(owned);
+    *out = buf;
+    return TRUE;
+}
+
 static BOOL shell_target(LPCWSTR file, LPCWSTR args, LPCWSTR dir) {
-    LPCWSTR p;
-    if (!shell_name(file) || !local_path(file) || !local_path(dir) || remote(args)) return FALSE;
-    for(p=file;*p;++p) if(*p==L':' && p!=file+1 && !(p==file+5 && file[0]==L'\\' && file[1]==L'\\')) return FALSE;
+    WCHAR raw[1024]; LPCWSTR path, p;
+    if (!unwrap_path(file, raw, 1024, &path)) return FALSE;
+    if (!shell_name(path) || !local_path(path) || !local_path(dir) || remote(args)) return FALSE;
+    if (shell_namespace(path)) {
+        /* A namespace item carries no drive letter, so the rule below cannot
+           be applied to it as written -- but it is what stops URLs. Test the
+           remainder instead of the whole string. */
+        for (p = path + 2; *p; ++p) if (*p == L':') return FALSE;
+    } else {
+        for (p = path; *p; ++p)
+            if (*p == L':' && p != path + 1 &&
+                !(p == path + 5 && path[0] == L'\\' && path[1] == L'\\')) return FALSE;
+    }
     /* A domain-shaped name can be an ordinary local file or directory.
        Reject schemeless addresses only at the shell boundary when no such
        local target exists; never reject filesystem access merely for www. */
-    if ((contains(file,L"www.") || contains(file,L".com") || contains(file,L".cn") || contains(file,L".net") || contains(file,L".org")) && GetFileAttributesW(file)==INVALID_FILE_ATTRIBUTES) return FALSE;
+    if ((contains(path,L"www.") || contains(path,L".com") || contains(path,L".cn") ||
+         contains(path,L".net") || contains(path,L".org")) &&
+        GetFileAttributesW(path)==INVALID_FILE_ATTRIBUTES) return FALSE;
     /* Browser shortcuts can hide a URL outside the command line. */
-    if (contains(file, L".url") || contains(file, L".website") || contains(file, L".hta")) return FALSE;
+    if (contains(path, L".url") || contains(path, L".website") || contains(path, L".hta")) return FALSE;
     return TRUE;
 }
 HINSTANCE WINAPI Guard_ShellExecuteW(HWND hwnd, LPCWSTR op, LPCWSTR file, LPCWSTR args, LPCWSTR dir, INT show) {
@@ -284,12 +391,13 @@ HINSTANCE WINAPI Guard_ShellExecuteA(HWND hwnd, LPCSTR op, LPCSTR file, LPCSTR a
     return ShellExecuteA(hwnd, op, file, args, dir, show);
 }
 BOOL WINAPI Guard_ShellExecuteExW(SHELLEXECUTEINFOW *info) {
-    WCHAR pidl_path[MAX_PATH]; LPCWSTR file=info ? info->lpFile : NULL;
-    if(info && (info->fMask & SEE_MASK_IDLIST)) {
-        if(!info->lpIDList || !SHGetPathFromIDListW((LPCITEMIDLIST)info->lpIDList,pidl_path)) file=NULL;
-        else file=pidl_path;
+    WCHAR pidl_path[MAX_PATH]; LPCWSTR resolved, target=NULL;
+    if(info) {
+        if(info->fMask & SEE_MASK_IDLIST) {
+            if(idlist_target(info->lpIDList, pidl_path, MAX_PATH, &resolved)) target=resolved;
+        } else target=info->lpFile;
     }
-    if (!info || !shell_target(file, info->lpParameters, info->lpDirectory)) {
+    if (!info || !shell_target(target, info->lpParameters, info->lpDirectory)) {
         if (info) { info->hInstApp=(HINSTANCE)SE_ERR_ACCESSDENIED; info->hProcess=NULL; }
         SetLastError(ERROR_ACCESS_DENIED); return FALSE;
     }
@@ -297,13 +405,19 @@ BOOL WINAPI Guard_ShellExecuteExW(SHELLEXECUTEINFOW *info) {
 }
 BOOL WINAPI Guard_ShellExecuteExA(SHELLEXECUTEINFOA *info) {
     WCHAR f[1024], a[1024], d[1024];
-    BOOL file_ok=FALSE;
+    BOOL file_ok=FALSE; LPCWSTR resolved, target=NULL;
     if(info) {
-        if(info->fMask & SEE_MASK_IDLIST) file_ok=info->lpIDList && SHGetPathFromIDListW((LPCITEMIDLIST)info->lpIDList,f);
-        else file_ok=wide(info->lpFile,f,1024);
+        if(info->fMask & SEE_MASK_IDLIST) {
+            file_ok=idlist_target(info->lpIDList, f, 1024, &resolved);
+            if(file_ok) target=resolved;
+        } else {
+            file_ok=wide(info->lpFile,f,1024);
+            if(file_ok) target=f;
+        }
     }
     if (!info || !file_ok ||
-        !wide(info->lpParameters,a,1024) || !wide(info->lpDirectory,d,1024) || !shell_target(f,a,d)) {
+        !wide(info->lpParameters,a,1024) || !wide(info->lpDirectory,d,1024) ||
+        !shell_target(target,a,d)) {
         if (info) { info->hInstApp=(HINSTANCE)SE_ERR_ACCESSDENIED; info->hProcess=NULL; }
         SetLastError(ERROR_ACCESS_DENIED); return FALSE;
     }
@@ -315,8 +429,13 @@ BOOL WINAPI Guard_ShellExecuteExA(SHELLEXECUTEINFOA *info) {
    that can reach the network directly -- browsers and anything remote -- are
    refused. This is a policy boundary, not a sandbox. */
 static BOOL spawn_target(LPCWSTR app, LPCWSTR cmd) {
-    LPCWSTR subject = app && *app ? app : cmd;
-    if (!subject || !*subject) return TRUE;
+    WCHAR raw[1024]; LPCWSTR subject, chosen = app && *app ? app : cmd;
+    if (!chosen || !*chosen) return TRUE;
+    if (!unwrap_path(chosen, raw, 1024, &subject)) return FALSE;
+    /* A component disabled by stub_component_names becomes spaces. The shell
+       guards already refuse that leaf; letting it through here would reach
+       Windows and raise its own "file not found" dialog. */
+    if (!visible_leaf(subject)) return FALSE;
     if (remote(subject)) return FALSE;
     if (!local_path(subject)) return FALSE;
     if (contains(subject, L"iexplore") || contains(subject, L"msedge") ||
@@ -350,13 +469,11 @@ UINT WINAPI Guard_WinExec(LPCSTR cmd, UINT show) {
 }
 
 LSTATUS WINAPI Guard_RegSetValueExW(HKEY key,LPCWSTR name,DWORD reserved,DWORD type,const BYTE *data,DWORD bytes) {
-    WCHAR dir[STARTUP_CAP],command[STARTUP_CAP],value[STARTUP_CAP]={0}; DWORD n;
+    WCHAR dir[STARTUP_CAP],command[STARTUP_CAP],value[STARTUP_CAP]={0};
     if(name && !lstrcmpiW(name,L"HuoChat") && type==REG_SZ && data && bytes>=2 && bytes%2==0 &&
        bytes<sizeof(value) && IsStartupKey(key)) {
         CopyMemory(value,data,bytes); /* The original SHSetValueW omits the NUL. */
-        n=GetModuleFileNameW(self_module,dir,STARTUP_CAP);
-        if(!n || n>=STARTUP_CAP) return ERROR_BUFFER_OVERFLOW;
-        while(n && dir[n-1]!=L'\\') n--; dir[n]=0;
+        if(!module_dir(self_module,dir,STARTUP_CAP)) return ERROR_BUFFER_OVERFLOW;
         if(IsOwnStartup(value,dir,NULL)) {
             if(!StartupCommand(dir,command)) return ERROR_BUFFER_OVERFLOW;
             return RegSetValueExW(key,name,reserved,REG_SZ,(const BYTE*)command,((DWORD)wcslen(command)+1)*2);

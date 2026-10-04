@@ -16,6 +16,21 @@ static BOOL JoinPath(WCHAR *out, size_t count, LPCWSTR dir, LPCWSTR name) {
     return TRUE;
 }
 
+/* Directory of a loaded module, left in out and terminated with a separator,
+   e.g. "C:\prog\". Every module that resolves a sibling file (hcg.dll looking
+   for hcn.dll, the launcher looking for Data\) used to carry its own copy of
+   this loop; one copy keeps the truncation test in a single place. */
+static BOOL module_dir(HMODULE module, WCHAR *out, DWORD count) {
+    DWORD n;
+    if (!out || count < 4) return FALSE;
+    n = GetModuleFileNameW(module, out, count);
+    if (!n || n >= count) return FALSE;
+    while (n && out[n-1] != L'\\' && out[n-1] != L'/') --n;
+    if (!n) return FALSE;
+    out[n] = 0;
+    return TRUE;
+}
+
 static void LogEvent(LPCWSTR message,DWORD error) {
     WCHAR line[2048], backup[PATH_CAP]; CHAR utf8[8192];
     HANDLE file; DWORD wrote; SYSTEMTIME time; LARGE_INTEGER size; int bytes;
@@ -147,9 +162,16 @@ static BOOL UpdateConfigurationFile(LPCWSTR dir,LPCWSTR index,LPCWSTR filename,c
     if(!found && FAILED(StringCchCatW(output,capacity,L"[Everything]\r\n"))) goto done;
     if(!MissingSettings(output,capacity,settings,count)) goto done;
     bytes=WideCharToMultiByte(CP_UTF8,0,output,-1,NULL,0,NULL,NULL);
+    if(!bytes){ error=ERROR_NO_UNICODE_TRANSLATION; goto done; }
     encoded=(CHAR*)HeapAlloc(GetProcessHeap(),0,bytes);
     if(!encoded) { error=ERROR_NOT_ENOUGH_MEMORY; goto done; }
-    WideCharToMultiByte(CP_UTF8,0,output,-1,encoded,bytes,NULL,NULL); bytes--;
+    /* A silent failure here would make the byte count -1 and turn the
+       "content unchanged" comparison below into a comparison against a
+       bogus length. */
+    if(!WideCharToMultiByte(CP_UTF8,0,output,-1,encoded,bytes,NULL,NULL)) {
+        error=ERROR_NO_UNICODE_TRANSLATION; goto done;
+    }
+    bytes--;
     if((DWORD)bytes==length && !memcmp(encoded,raw,length)) { ok=TRUE; goto done; }
     if(!GetTempFileNameW(dir,L"hci",0,temporary)) { error=GetLastError(); goto done; }
     file=CreateFileW(temporary,GENERIC_WRITE,0,NULL,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,NULL);

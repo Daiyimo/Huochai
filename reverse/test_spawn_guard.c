@@ -81,6 +81,15 @@ int main(void) {
     check(denied_create(guard, L"https://jf.huoying666.com/x.exe") == 1,
           "business-host target denied");
     check(denied_create(guard, L"\\\\server\\share\\tool.exe") == 1, "UNC target denied");
+    /* A quoted UNC path used to skip the UNC rejection entirely, because the
+       rule only recognised a leading backslash. */
+    check(denied_create(guard, L"\"\\\\server\\share\\tool.exe\"") == 1,
+          "quoted UNC target denied");
+    /* A component disabled by stub_component_names becomes spaces. Forwarding
+       that reached Windows and raised its own "file not found" dialog. */
+    check(denied_create(guard, L"                        ") == 1,
+          "blank component name denied");
+    check(denied_create(guard, L"\"\"") == 1, "empty quoted name denied");
 
     /* WinExec follows the same policy. */
     typedef UINT (WINAPI *WE)(LPCSTR, UINT);

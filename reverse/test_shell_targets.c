@@ -23,7 +23,22 @@ int wmain(int argc, WCHAR **argv) {
         L"                      ", L"\t \r\n",
         L"\"D:\\portable test\\                      \"",
         L"D:/portable test/                      ",
-        L"", L"\"\"", L"D:                      "
+        L"", L"\"\"", L"D:                      ",
+        /* A quoted path is what Windows itself sees once the quotes are
+           stripped. It used to skip both the UNC rejection and the drive
+           letter test at the same time. */
+        L"\"\\\\fileserver\\share\\tool.exe\"",
+        /* A shell-namespace item is not a file, so the rules that describe
+           files must not be applied to it verbatim. */
+        L"shell:RecycleBinFolder",
+        L"::{645FF040-5081-101B-9F08-00AA002F954E}\\..\\..\\Windows\\System32\\cmd.exe"
+    };
+    /* The mirror image: paths that carry a byte the rules below cannot make
+       sense of, but which the shell resolves every day. */
+    const WCHAR *allowed[] = {
+        L"::{645FF040-5081-101B-9F08-00AA002F954E}",
+        L"::{20D04FE0-3AEA-1069-A2D8-08002B30309D}",
+        L"\"C:\\Windows\\System32\\notepad.exe\""
     };
     unsigned i;
     if (argc > 1 && !lstrcmpW(argv[1], L"--child")) return 23;
@@ -55,8 +70,21 @@ int wmain(int argc, WCHAR **argv) {
         CHECK(shella(NULL, "open", narrow, NULL, NULL, SW_HIDE) == (HINSTANCE)SE_ERR_ACCESSDENIED);
         CHECK(GetLastError() == ERROR_ACCESS_DENIED);
     }
-    /* A real local executable, including a path with spaces, must still work.
-       The child is this test itself and immediately exits with a known code. */
+    /* A shell-namespace item is reached from the application every day: it is
+       what "open Recycle Bin" does. The colon rules above must not mistake it
+       for a URL -- the quoted UNC case below proves both directions matter. */
+    for (i = 0; i < sizeof(allowed)/sizeof(allowed[0]); ++i) {
+        ZeroMemory(&w, sizeof(w)); w.cbSize = sizeof(w);
+        w.fMask = SEE_MASK_FLAG_NO_UI | SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC;
+        w.lpVerb = L"open"; w.lpFile = allowed[i]; w.nShow = SW_HIDE;
+        SetLastError(0);
+        /* A namespace item opens a folder window, so only the refusal is
+           checked here; the quoted-path case is launched for real below. */
+        CHECK(exw(&w) || GetLastError() != ERROR_ACCESS_DENIED);
+    }
+
+    /* A real local executable, including a quoted path with spaces, must still
+       work. The child is this test itself and exits with a known code. */
     CHECK(GetModuleFileNameW(NULL, self, MAX_PATH));
     ZeroMemory(&w, sizeof(w)); w.cbSize = sizeof(w);
     w.fMask = SEE_MASK_FLAG_NO_UI | SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC;
