@@ -57,23 +57,88 @@ GUARDS = {
     'Shell_NotifyIconW':8, 'Shell_NotifyIconA':8,
 }
 
-def check_policy_parity():
+# The launcher's kernel object names, spelled exactly as launcher.c and
+# package.nsi do. One test family drives launcher.c through the real NSIS
+# wrapper, which opens the launcher mutex and the stopping event by name, so it
+# must use the versioned production names. The other family starts the launcher
+# directly and only needs names no other process can guess, and keeps its
+# historical short form. Both spellings are therefore load-bearing: changing one
+# isolates that test from the code it is meant to exercise.
+def isolated_definitions(identity, registry_root, packaged):
+    suffix = ('LauncherV1', 'LauncherReadyV2', 'LauncherStoppingV1') if packaged \
+        else ('Launcher', 'Ready', 'Stop')
+    return {'mutex': 'Local\\' + identity + suffix[0],
+            'ready': 'Local\\' + identity + suffix[1],
+            'stop': 'Local\\' + identity + suffix[2],
+            'startup': 'Software\\' + registry_root + '\\' + identity}
+
+def isolated_definition_source(identity, registry_root, packaged):
+    """The same names as C ``#define``s for one test translation unit."""
+    names = isolated_definitions(identity, registry_root, packaged)
+    pairs = [('HUOCHAT_LAUNCHER_MUTEX', names['mutex']),
+             ('HUOCHAT_READY_EVENT', names['ready']),
+             ('HUOCHAT_STOP_EVENT', names['stop']),
+             ('HUOCHAT_STARTUP_KEY', names['startup'])]
+    return ''.join('#define %s L"%s"\n' % (macro, value.replace('\\', '\\\\'))
+                   for macro, value in pairs)
+
+def brace_block(source, start):
+    """Text of the brace-delimited block that begins at or after ``start``."""
+    opening = source.find('{', start)
+    if opening < 0:
+        raise ValueError('No brace block at offset %d of guard.c' % start)
+    depth = 0
+    for index in range(opening, len(source)):
+        if source[index] == '{':
+            depth += 1
+        elif source[index] == '}':
+            depth -= 1
+            if not depth:
+                return source[opening:index + 1]
+    raise ValueError('Unterminated brace block in guard.c')
+
+# The two guard.c functions that decide what a loaded module *is*. Their
+# ``contains`` arguments are module names. The same helper is also used to match
+# ProgID fragments ("xmlhttp", "internetexplorer") against a class name, and
+# those tokens are not modules -- scanning the whole file would invent modules
+# the policy never had to refuse.
+MODULE_LIST_FUNCTIONS = ('network_module', 'Guard_LoadLibraryExW')
+
+def guard_module_names(source, functions=MODULE_LIST_FUNCTIONS):
+    """Module names guard.c matches against a loaded module path.
+
+    The span is scoped on purpose: ``base``/``name``/``leaf`` are all spellings
+    the argument has had, and a whole-file scan picks up the ProgID comparisons
+    in Guard_GetProcAddress, which normalise into bogus modules such as
+    "internetexplorer.dll".
+    """
+    names=set()
+    for function in functions:
+        match=re.search(r'\b%s\s*\(' % re.escape(function), source)
+        if not match:
+            raise ValueError('guard.c no longer defines '+function)
+        body=brace_block(source, match.end())
+        for token in re.findall(r'contains\(\s*(?:base|name|leaf)\s*,\s*'
+                                r'L"([a-z0-9._\-]+)"\)', body):
+            token=token.lower()
+            # Normalise the suffix: guard.c writes some modules as "ws2_32" and
+            # the policy as "ws2_32.dll". Substring tests such as
+            # "api-ms-win-net-" are not module names and are dropped.
+            if token.endswith('.dll') or token.endswith('.exe'):
+                names.add(token)
+            elif '-' not in token:
+                names.add(token+'.dll')
+    return names
+
+def check_policy_parity(source=None):
     """The static and runtime network lists must agree; drift hides imports.
 
     guard.c writes some module names without the ``.dll`` suffix, so both sides
     are normalised before comparison.
     """
-    source=(SOURCE_DIR/'guard.c').read_text(encoding='utf-8',errors='replace')
-    names=set()
-    for match in re.finditer(r'contains\(base,\s*L"([a-z0-9._\-]+)"\)', source):
-        token=match.group(1).lower()
-        # Normalise the suffix: guard.c writes some modules as "ws2_32" and the
-        # policy as "ws2_32.dll". Substring tests such as "api-ms-win-net-" are
-        # not module names and are excluded from the comparison.
-        if token.endswith('.dll') or token.endswith('.exe'):
-            names.add(token)
-        elif '-' not in token:
-            names.add(token + '.dll')
+    if source is None:
+        source=(SOURCE_DIR/'guard.c').read_text(encoding='utf-8',errors='replace')
+    names=guard_module_names(source)
     static={d.lower() for d in NETWORK_DLLS}
     # node.dll and the web engines are refused at load time rather than stubbed.
     only_guard=sorted(names-static-INTENTIONALLY_ABSENT)
@@ -82,6 +147,54 @@ def check_policy_parity():
     if only_guard or only_static:
         raise ValueError('Network DLL lists disagree: guard-only=%s policy-only=%s'
                          % (only_guard, only_static))
+    # Load-time refusal is the other half of that rule: every module the policy
+    # declares "must stay missing" has to be refused by the loader, or legacy
+    # code gets a fake handle and calls exports that do not exist. The reverse
+    # direction matters just as much -- a module is either stubbed or refused,
+    # never both.
+    unrefused=sorted(INTENTIONALLY_ABSENT-names)
+    both=sorted(names & INTENTIONALLY_ABSENT & static)
+    if unrefused or both:
+        raise ValueError('Intentionally absent DLL list disagrees: '
+                         'not-refused=%s stubbed-and-refused=%s' % (unrefused, both))
+    # Dynamic resolution must not bypass the interception table: whatever
+    # Guard_GetProcAddress matches the requested name against decides which
+    # symbols GetProcAddress forwards into hcg.dll, so it has to name every
+    # symbol hcg.dll is built from, and nothing else.
+    intercepted=guard_intercept_names(source)
+    unguarded=sorted(set(GUARDS)-intercepted)
+    unknown=sorted(intercepted-set(GUARDS))
+    if unguarded or unknown:
+        raise ValueError('Guard interception lists disagree: '
+                         'guarded-but-unintercepted=%s intercepted-but-unguarded=%s'
+                         % (unguarded, unknown))
+
+def guard_intercept_names(source):
+    """Names guard.c's GetProcAddress hook forwards to hcg.dll.
+
+    The hook matches the requested export name against one explicit list, which
+    currently exists in two shapes: the static GUARDED_EXPORTS table and the
+    older inline ``lstrcmpA`` chain. Both are read so the parity check keeps
+    working while the table replaces the chain. The chain is only counted
+    inside Guard_GetProcAddress, because the same helper is used elsewhere in
+    guard.c for unrelated comparisons.
+
+    A name that reaches hcg.dll without appearing here is reachable through
+    GetProcAddress with none of its rules applied.
+    """
+    names=set()
+    table=source.find('GUARDED_EXPORTS')
+    if table>=0:
+        names.update(re.findall(r'"([A-Za-z0-9_]+)"', brace_block(source, table)))
+    hook=source.find('Guard_GetProcAddress')
+    if hook>=0:
+        end=re.search(r'\n\}\s*\n', source[hook:])
+        body=source[hook:hook+end.end()] if end else source[hook:]
+        names.update(match.group(1) for match in
+                     re.finditer(r'lstrcmpA\s*\(\s*name\s*,\s*"([A-Za-z0-9_]+)"\s*\)', body))
+    if not names:
+        raise ValueError('No guarded export names found in guard.c')
+    return names
 
 def run(args, **kwargs):
     args=list(args)
@@ -178,14 +291,19 @@ def compact_guide_gif(payload, name=None):
         if source.format != 'GIF' or source.size != (1000, 600):
             raise ValueError('Unexpected guide animation format or dimensions')
         if name in ('guide/guid5_2.gif','guide/guid5_3.gif'):
-            return offline_guide(int(name[-5]))
-        source.seek(source.n_frames - 1)
-        frame = source.convert('RGB').quantize(colors=128)
-        out = io.BytesIO()
-        frame.save(out, format='GIF', optimize=True)
-    if len(out.getvalue()) >= len(payload):
+            out = offline_guide(int(name[-5]))
+        else:
+            source.seek(source.n_frames - 1)
+            frame = source.convert('RGB').quantize(colors=128)
+            buffer = io.BytesIO()
+            frame.save(buffer, format='GIF', optimize=True)
+            out = buffer.getvalue()
+    # Both branches answer to the same rule: a rendered page that no longer
+    # beats the original animation must stop the build instead of shipping the
+    # larger file, whichever code path produced it.
+    if len(out) >= len(payload):
         raise ValueError('Guide compaction did not reduce its size')
-    return out.getvalue()
+    return out
 
 
 def clean_zip(blob):
@@ -325,7 +443,13 @@ def sanitize_pe(path, redirect=True):
                 name=dll.dll.decode().lower()
                 replacement='hcn.dll' if name in NETWORK_DLLS else 'hcg.dll' if name in GUARDED_DLLS else None
                 if replacement:
-                    # Both modules are shorter than original import DLL names.
+                    # Both modules are shorter than every original import DLL
+                    # name, but that is an invariant of policy, not of this code:
+                    # an equal-length slice assignment silently becomes an
+                    # insertion when the replacement is longer, shifting every
+                    # following byte without raising. Refuse instead.
+                    if len(replacement)>len(dll.dll):
+                        raise ValueError('Guard module name too long: %s -> %s' % (name,replacement))
                     name_rva=getattr(dll.struct,'Name',None) or dll.struct.szName
                     off=pe.get_offset_from_rva(name_rva)
                     data[off:off+len(dll.dll)]=replacement.encode().ljust(len(dll.dll),b'\0')
@@ -395,9 +519,40 @@ def collect_forwarders(folders):
             pe.close()
     return forwards,ordinals,net_ordinals
 
+def net_export_ordinals(net_by_name=None):
+    """Ordinal of every export the generated hcn.dll will carry.
+
+    net.def lists one export per NETWORK_APIS entry, in that order. LINK would
+    number a bare export by its position in the file; the numbers are written
+    out explicitly so the harness assertions can be derived from this same map
+    instead of hardcoding ws2_32's ordinals (111 for WSAGetLastError, 23 for
+    socket) -- those belong to the DLL we replace, not to a freshly linked
+    103-export hcn.dll.
+
+    A name that the source binaries already import by ordinal must keep that
+    ordinal: sanitize_pe only rewrites the DLL name in the import descriptor,
+    so an import of ws2_32.#111 becomes hcn.dll!#111. Every other export gets
+    the lowest free number. Counting positions instead of free numbers used to
+    collide with the imported ordinals and LINK refused the duplicate exports.
+    """
+    imported = net_by_name or {}
+    used = set(imported.values())
+    ordinals = {}
+    for name in NETWORK_APIS:
+        if name in imported:
+            ordinals[name] = imported[name]
+            continue
+        candidate = len(ordinals) + 1
+        while candidate in used:
+            candidate += 1
+        used.add(candidate)
+        ordinals[name] = candidate
+    return ordinals
+
 def compile_guards(build,folders,env):
     forwards,ordinals,net_ordinals=collect_forwarders(folders)
     net_by_name={name:ordinal for ordinal,name in net_ordinals.items()}
+    exported_ordinals=net_export_ordinals(net_by_name)
     definitions=['LIBRARY hcn','EXPORTS']; code=['#define WIN32_LEAN_AND_MEAN','#include <windows.h>','#include <nb30.h>']
     for name,(size,value) in NETWORK_APIS.items():
         args=', '.join(f'ULONG_PTR a{i}' for i in range(size//4)) or 'void'
@@ -408,8 +563,7 @@ def compile_guards(build,folders,env):
         if name=='Netbios':
             body='if(a0) { ((PNCB)a0)->ncb_retcode=0x34; ((PNCB)a0)->ncb_cmd_cplt=0x34; } SetLastError(5); return 0x34;'
         code.append(f'ULONG_PTR __stdcall Deny_{name}({args}) {{ {body} }}')
-        suffix=' @'+str(net_by_name[name]) if name in net_by_name else ''
-        definitions.append(f'  {name}=_Deny_{name}@{size}{suffix}')
+        definitions.append(f'  {name}=_Deny_{name}@{size} @{exported_ordinals[name]}')
     (build/'net.c').write_text('\n'.join(code),encoding='utf-8')
     (build/'net.def').write_text('\n'.join(definitions),encoding='utf-8')
     run(['cl.exe','/nologo','/LD','/O1','/GS-','net.c','/link','/NOENTRY','/NODEFAULTLIB','kernel32.lib','/DEF:net.def','/OUT:hcn.dll','/DYNAMICBASE','/NXCOMPAT'],cwd=build,env=env)
@@ -434,6 +588,13 @@ def compile_guards(build,folders,env):
         tests.append(f'{{ typedef ULONG_PTR (__stdcall *FN)({types}); FN fn=(FN)GetProcAddress(net,"{name}"); CHECK(fn); CHECK(fn({args})==(ULONG_PTR)({value})); }}')
     for name in sorted(forwards): tests.append(f'CHECK(GetProcAddress(guard,"{name}")!=NULL);')
     for ordinal in ordinals: tests.append(f'CHECK(GetProcAddress(guard,(LPCSTR){ordinal})!=NULL);')
+    # The ordinal probes come from the same map that wrote net.def, so the
+    # harness and the linker can never disagree about what number an export has.
+    for probe in ('WSAGetLastError','socket'):
+        if probe not in exported_ordinals:
+            raise ValueError('No derived export ordinal for '+probe)
+        tests.append(f'CHECK(GetProcAddress(net,(LPCSTR){exported_ordinals[probe]})'
+                     f'==GetProcAddress(net,"{probe}"));')
     (build/'all_exports_test.inc').write_text('\n'.join(tests),encoding='utf-8')
     (build/'forwarders.json').write_text(json.dumps({'named':forwards,'ordinals':ordinals,'guards':GUARDS},indent=2),encoding='utf-8')
 
@@ -445,7 +606,11 @@ def icon_from(exe, out):
     if group:
         count=struct.unpack_from('<H',group,4)[0]; header=bytearray(group[:6]); pixels=[]; offset=6+count*16
         for i in range(count):
-            entry=group[6+i*14:20+i*14]; ident=struct.unpack_from('<H',entry,12)[0]; payload=images[ident]
+            entry=group[6+i*14:20+i*14]; ident=struct.unpack_from('<H',entry,12)[0]
+            if ident not in images:
+                raise ValueError('Group icon entry %d of %s references missing RT_ICON %d'
+                                 % (i, exe, ident))
+            payload=images[ident]
             header.extend(entry[:8]+struct.pack('<II',len(payload),offset)); pixels.append(payload); offset+=len(payload)
         out.write_bytes(bytes(header)+b''.join(pixels))
     pe.close()
@@ -558,9 +723,14 @@ def verify(folder, require_guards=True, system32=None):
         failures.append('Portable HuoChat seed data is incomplete')
     if (data_root/'Sites.db').exists():
         con=sqlite3.connect((data_root/'Sites.db').resolve().as_uri()+'?mode=ro&immutable=1',uri=True)
-        for table in ('bookmark','top_site'):
-            if con.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0]: failures.append('Nonempty '+table)
-        con.close()
+        try:
+            for table in ('bookmark','top_site'):
+                if con.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0]:
+                    failures.append('Nonempty '+table)
+        except sqlite3.OperationalError as exc:
+            failures.append('Sites.db is unreadable: '+str(exc))
+        finally:
+            con.close()
     if (data_root/'Index.ini').exists():
         ini=(data_root/'Index.ini').read_text(encoding='utf-8-sig')
         for key in ('check_for_updates_on_startup','beta_updates','http_server_enabled','etp_server_enabled','allow_http_server','allow_etp_server'):
@@ -593,7 +763,7 @@ def prepare(source, dest):
     (dest/'Everything.ini').unlink()
 
 def verify_windows_manifests(folder,build,variant):
-    paths=[]; directory=build/(variant+'-manifests'); directory.mkdir()
+    paths=[]; directory=build/(variant+'-manifests'); directory.mkdir(exist_ok=True)
     for p in pe_files(folder):
         if is_official_engine(p,folder):continue # x64 manifest is checked with the signed upstream hash
         pe=pefile.PE(str(p))
@@ -712,7 +882,7 @@ def main():
          '/link','kernel32.lib','/OUT:test_local_paths.exe'],cwd=build,env=env)
     print(run([build/'test_local_paths.exe'],cwd=build).decode('utf-8','replace'),flush=True)
     run(['cl.exe','/nologo','/utf-8','/MT','/O1',SOURCE_DIR/'test_service_cleanup.c',
-         '/link','kernel32.lib','advapi32.lib','user32.lib','/OUT:test_service_cleanup.exe'],cwd=build,env=env)
+         '/link','kernel32.lib','advapi32.lib','user32.lib','shell32.lib','/OUT:test_service_cleanup.exe'],cwd=build,env=env)
     print(run([build/'test_service_cleanup.exe'],cwd=build).decode('utf-8','replace'),flush=True)
     publication=['single'] if args.publish else []
     report={'source_revision':SOURCE_REV,'published_variants':publication,

@@ -104,6 +104,9 @@ if __name__=='__main__':
     parser.add_argument('--output',type=Path,required=True)
     args=parser.parse_args()
     parent=Path(tempfile.mkdtemp(prefix='huochai_beta_probe_'))
-    results=[probe(engine.resolve(),args.query.resolve(),parent) for engine in args.engine]
-    args.output.write_text(json.dumps(results,ensure_ascii=False,indent=2),encoding='utf-8')
-    print(json.dumps(results,ensure_ascii=False,indent=2))
+    try:
+        results=[probe(engine.resolve(),args.query.resolve(),parent) for engine in args.engine]
+        args.output.write_text(json.dumps(results,ensure_ascii=False,indent=2),encoding='utf-8')
+        print(json.dumps(results,ensure_ascii=False,indent=2))
+    finally:
+        shutil.rmtree(parent,ignore_errors=True)

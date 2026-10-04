@@ -52,7 +52,11 @@ def relocate_data_paths(path):
     else:
         raise ValueError('Unexpected payload for data-path relocation')
     old, new = 'Everything.ini'.encode(encoding), 'Data\\Index.ini'.encode(encoding)
-    assert len(old) == len(new)
+    # An equal-length invariant must not rest on an assertion: assert is stripped
+    # under python -O, and the slice below would then change the file length.
+    if len(old) != len(new):
+        raise ValueError('Configuration literal replacement would change length: '
+                         '%r -> %r' % (old, new))
     for off in offsets:
         section = pe.get_section_by_rva(pe.get_rva_from_offset(off))
         if section.Characteristics & 0x20000000 or data[off:off+len(old)] != old:

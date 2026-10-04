@@ -7,14 +7,13 @@ import subprocess
 import time
 import uuid
 from backend_build import ENGINE_SHA256
+from build import isolated_definition_source
+
 
 def verify_backend_package(folder,build,env,run,source,package,compiler,icon):
     root=build/('nested package '+uuid.uuid4().hex[:8]);root.mkdir();seed=root/'seed';shutil.copytree(folder,seed)
     identity='HuoChatNested'+uuid.uuid4().hex
-    definitions=('#define HUOCHAT_LAUNCHER_MUTEX L"Local\\\\'+identity+'LauncherV1"\n'
-        '#define HUOCHAT_READY_EVENT L"Local\\\\'+identity+'LauncherReadyV2"\n'
-        '#define HUOCHAT_STOP_EVENT L"Local\\\\'+identity+'LauncherStoppingV1"\n'
-        '#define HUOCHAT_STARTUP_KEY L"Software\\\\HuoChatNestedTests\\\\'+identity+'"\n')
+    definitions=isolated_definition_source(identity,'HuoChatNestedTests',True)
     wrapper=root/'launcher_test.c';wrapper.write_text(definitions+'#include "launcher.c"\n',encoding='utf-8')
     run(['cl.exe','/nologo','/utf-8','/MT','/O1','/I'+str(source),wrapper,'/link','kernel32.lib','advapi32.lib',
          'user32.lib','/SUBSYSTEM:WINDOWS','/OUT:'+str(seed/'HuoChat_launcher.exe')],cwd=root,env=env)

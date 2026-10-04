@@ -22,3 +22,27 @@ class NavigationLayoutTests(unittest.TestCase):
         self.assertEqual(json.loads(clean_navigation_layout(json.dumps(original).encode())),
                          {'items':[custom],'unknown':'retain'})
 
+    def test_the_byte_order_mark_of_the_input_is_preserved(self):
+        """Both branches must answer the same question from the same bytes.
+
+        The early return hands the original file back untouched, so it kept a
+        UTF-8 BOM while the rewrite dropped it. That made "was this file edited
+        by this build?" unanswerable from the bytes alone, and let the
+        idempotence test above pass while the two shapes still differed.
+        """
+        layout={'items':[{'type':1,'icon':'tinynavigation/icon/baidu.png'},
+                         {'type':4,'x':9,'y':9,'text1':'我的电脑'}],'unknown':'retain'}
+        body=json.dumps(layout,ensure_ascii=False).encode('utf-8')
+        for raw in (body, b'\xef\xbb\xbf'+body):
+            result=clean_navigation_layout(raw)
+            self.assertTrue(result.startswith(raw[:3]),
+                            'the BOM of the input must survive the rewrite')
+            self.assertEqual(raw[:3], result[:3])
+            # Rewriting again must be a no-op, not a second, BOM-less rewrite.
+            self.assertEqual(result, clean_navigation_layout(result))
+
+    def test_a_file_that_needs_no_change_is_returned_verbatim(self):
+        layout={'items':[{'type':1,'icon':'tinynavigation/icon/keep.png'}],'unknown':'retain'}
+        raw=json.dumps(layout).encode('utf-8')
+        self.assertEqual(raw, clean_navigation_layout(raw))
+

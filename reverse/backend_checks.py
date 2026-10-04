@@ -7,6 +7,7 @@ import time
 import uuid
 import psutil
 from backend_build import ENGINE_SHA256
+from build import isolated_definition_source
 
 def verify_backend(folder,build,env,run,source):
     root=build/('beta integration 中文 '+uuid.uuid4().hex[:8]);shutil.copytree(folder,root)
@@ -15,10 +16,7 @@ def verify_backend(folder,build,env,run,source):
     original_ui=root/'HuoChat-query-source.exe';shutil.copy2(root/'HuoChat.exe',original_ui)
     other=root.with_name(root.name+' foreign')
     identity='HuoChatBetaTest'+uuid.uuid4().hex
-    definitions=('#define HUOCHAT_LAUNCHER_MUTEX L"Local\\\\'+identity+'LauncherV1"\n'
-        '#define HUOCHAT_READY_EVENT L"Local\\\\'+identity+'Ready"\n'
-        '#define HUOCHAT_STOP_EVENT L"Local\\\\'+identity+'Stop"\n'
-        '#define HUOCHAT_STARTUP_KEY L"Software\\\\HuoChatBetaTests\\\\'+identity+'"\n')
+    definitions=isolated_definition_source(identity,'HuoChatBetaTests',False)
     for name,include in [('HuoChat_launcher.exe','launcher.c'),('HuoChat.exe','test_backend_ui.c')]:
         wrapper=root/(name+'.c');wrapper.write_text(definitions+'#define HC_CHECKPOINT_INTERVAL_MS 1000\n#include "'+include+'"\n',encoding='utf-8')
         run(['cl.exe','/nologo','/utf-8','/MT','/O1','/I'+str(source),wrapper,'/link','kernel32.lib',

@@ -42,7 +42,7 @@ def probe_host(path):
 
 
 def verify_settings(build,folder,env,run,source):
-    root=build/'settings persistence 中文';root.mkdir()
+    root=build/'settings persistence 中文';root.mkdir(exist_ok=True)
     # Only program files; never copy the user's profile or execute original UI.
     for p in folder.iterdir():
         if p.is_file() and p.suffix.lower() in ('.exe','.dll'):shutil.copy2(p,root/p.name)

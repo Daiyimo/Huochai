@@ -8,6 +8,8 @@ import time
 import uuid
 import psutil
 
+from build import isolated_definition_source
+
 
 def verify_environment_release(build, env, run, source):
     root=(build/('environment-release-'+uuid.uuid4().hex[:8])).resolve();root.mkdir()
@@ -15,10 +17,7 @@ def verify_environment_release(build, env, run, source):
     external=root/'external application';external.mkdir()
     profile=root/'caller profile';profile.mkdir()
     identity='HuoChatEnvironment'+uuid.uuid4().hex
-    definitions=('#define HUOCHAT_LAUNCHER_MUTEX L"Local\\\\'+identity+'Launcher"\n'
-        '#define HUOCHAT_READY_EVENT L"Local\\\\'+identity+'Ready"\n'
-        '#define HUOCHAT_STOP_EVENT L"Local\\\\'+identity+'Stop"\n'
-        '#define HUOCHAT_STARTUP_KEY L"Software\\\\HuoChatEnvironmentTests\\\\'+identity+'"\n')
+    definitions=isolated_definition_source(identity,'HuoChatEnvironmentTests',False)
     for name,include in [('HuoChat_launcher.exe','launcher.c'),('HuoChat.exe','test_environment_hold.c')]:
         wrapper=root/(name+'.c');wrapper.write_text(definitions+'#include "'+include+'"\n',encoding='utf-8')
         run(['cl.exe','/nologo','/utf-8','/MT','/O1','/I'+str(source),wrapper,'/link',

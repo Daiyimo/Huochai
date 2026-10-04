@@ -6,14 +6,13 @@ import time
 import uuid
 import psutil
 
+from build import isolated_definition_source
+
 
 def verify_shutdown(parent,env,compiler,icon,package,run,source):
     root=parent/('shutdown-'+uuid.uuid4().hex);root.mkdir()
     identity='HuoChatCancelTest'+uuid.uuid4().hex
-    definitions=('#define HUOCHAT_LAUNCHER_MUTEX L"Local\\\\'+identity+'LauncherV1"\n'
-        '#define HUOCHAT_READY_EVENT L"Local\\\\'+identity+'LauncherReadyV2"\n'
-        '#define HUOCHAT_STOP_EVENT L"Local\\\\'+identity+'LauncherStoppingV1"\n'
-        '#define HUOCHAT_STARTUP_KEY L"Software\\\\HuoChatRuntimeTests\\\\'+identity+'"\n')
+    definitions=isolated_definition_source(identity,'HuoChatRuntimeTests',True)
     seed=root/'seed';seed.mkdir()
     for filename,include in [('HuoChat_launcher.exe','launcher.c'),('HuoChat.exe','runtime_fixture.c')]:
         wrapper=root/(filename+'.c');wrapper.write_text(definitions+'#include "'+include+'"\n',encoding='utf-8')

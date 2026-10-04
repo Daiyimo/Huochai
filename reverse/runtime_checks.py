@@ -11,17 +11,17 @@ import uuid
 import winreg
 import os
 
+from build import isolated_definition_source, isolated_definitions
+
 
 def verify_runtime(build, env, compiler, icon, package, run, source):
     parent=build
     build=Path(tempfile.mkdtemp(prefix='runtime_',dir=parent))
     identity='HuoChatOfflineTest'+uuid.uuid4().hex
+    names=isolated_definitions(identity,'HuoChatRuntimeTests',True)
+    definitions=isolated_definition_source(identity,'HuoChatRuntimeTests',True)
     launcher_source=build/'runtime_launcher.c'
-    launcher_source.write_text(
-        '#define HUOCHAT_LAUNCHER_MUTEX L"Local\\\\'+identity+'LauncherV1"\n'+
-        '#define HUOCHAT_READY_EVENT L"Local\\\\'+identity+'LauncherReadyV2"\n'+
-        '#define HUOCHAT_STOP_EVENT L"Local\\\\'+identity+'LauncherStoppingV1"\n'+
-        '#define HUOCHAT_STARTUP_KEY L"Software\\\\HuoChatRuntimeTests\\\\'+identity+'"\n'+
+    launcher_source.write_text(definitions+
         '#include "launcher.c"\n',encoding='utf-8')
     run(['cl.exe','/nologo','/utf-8','/MT','/O1','/I'+str(source),launcher_source,
          '/link','kernel32.lib','advapi32.lib','user32.lib','/SUBSYSTEM:WINDOWS','/OUT:HuoChat_launcher.exe'],cwd=build,env=env)
@@ -29,7 +29,7 @@ def verify_runtime(build, env, compiler, icon, package, run, source):
          '/link','kernel32.lib','user32.lib','/OUT:test_portable.exe'],cwd=build,env=env)
     print(run([build/'test_portable.exe',build/'config-tests'],cwd=build).decode(),flush=True)
     fixture_source=build/'runtime_fixture_wrapper.c'
-    fixture_source.write_text('#define HUOCHAT_STOP_EVENT L"Local\\\\'+identity+'LauncherStoppingV1"\n'+
+    fixture_source.write_text('#define HUOCHAT_STOP_EVENT L"'+names['stop'].replace('\\','\\\\')+'"\n'+
         '#include "runtime_fixture.c"\n',encoding='utf-8')
     run(['cl.exe','/nologo','/utf-8','/MT','/O1','/I'+str(source),fixture_source,
          '/link','kernel32.lib','/SUBSYSTEM:WINDOWS','/OUT:runtime_fixture.exe'],cwd=build,env=env)
@@ -63,7 +63,7 @@ def verify_runtime(build, env, compiler, icon, package, run, source):
             time.sleep(.05)
         raise AssertionError('Timed out waiting for runtime condition')
     def launcher_running():
-        handle=kernel.OpenMutexW(0x100000,False,'Local\\'+identity+'LauncherV1')
+        handle=kernel.OpenMutexW(0x100000,False,names['mutex'])
         if handle: kernel.CloseHandle(handle)
         return bool(handle)
     if launcher_running(): raise RuntimeError('Close the running HuoChat before the isolated runtime checks')

@@ -47,7 +47,8 @@ def route_windows(path):
     pe=pefile.PE(data=raw);pe.OPTIONAL_HEADER.CheckSum=pe.generate_checksum();path.write_bytes(pe.write());pe.close()
 
 def install_engine(folder,build):
-    engine=folder/'Engine';engine.mkdir()
+    # An interrupted build can leave a half-populated Engine directory behind.
+    engine=folder/'Engine';engine.mkdir(exist_ok=True)
     shutil.copy2(pinned('Everything-'+ENGINE_VERSION+'.x64.exe',ENGINE_SHA256),engine/'Everything.exe')
     shutil.copy2(build/'hc_engine.exe',folder/'hc_engine.exe')
 

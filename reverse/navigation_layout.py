@@ -8,6 +8,10 @@ LOCAL_TYPES=(4,7,5,6)  # My Computer, Notepad, Screenshot, Calculator
 
 def clean_navigation_layout(raw):
     document=json.loads(raw.decode('utf-8-sig'))
+    # The input may or may not carry a UTF-8 BOM. Preserve whichever it had so
+    # the rewritten file is byte-comparable with the untouched one: otherwise
+    # "did this build change the layout?" cannot be answered from the bytes.
+    bom=raw[:3] if raw[:3]==b'\xef\xbb\xbf' else b''
     if not isinstance(document,dict) or not isinstance(document.get('items'),list):
         raise ValueError('Unrecognised navigation layout')
     items=document['items']
@@ -22,5 +26,5 @@ def clean_navigation_layout(raw):
         for item in local:
             item['x']=LOCAL_TYPES.index(item['type']);item['y']=0
     document['items']=kept
-    return json.dumps(document,ensure_ascii=True,separators=(',',':')).encode('utf-8')
+    return bom+json.dumps(document,ensure_ascii=True,separators=(',',':')).encode('utf-8')
 

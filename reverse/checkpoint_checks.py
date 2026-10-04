@@ -7,14 +7,13 @@ import subprocess
 import time
 import uuid
 
+from build import isolated_definition_source
+
 
 def verify_checkpoints(folder, build, env, run, source):
-    root=build/'checkpoint 中文';root.mkdir()
+    root=build/'checkpoint 中文';root.mkdir(exist_ok=True)
     identity='HuoChatCheckpoint'+uuid.uuid4().hex
-    definitions=('#define HUOCHAT_LAUNCHER_MUTEX L"Local\\\\'+identity+'LauncherV1"\n'
-                 '#define HUOCHAT_READY_EVENT L"Local\\\\'+identity+'Ready"\n'
-                 '#define HUOCHAT_STOP_EVENT L"Local\\\\'+identity+'Stop"\n'
-                 '#define HUOCHAT_STARTUP_KEY L"Software\\\\HuoChatCheckpointTests\\\\'+identity+'"\n')
+    definitions=isolated_definition_source(identity,'HuoChatCheckpointTests',False)
     wrapper=root/'launcher_test.c'
     wrapper.write_text(definitions+'#define HC_CHECKPOINT_INTERVAL_MS 1000\n'
                        '#define HC_CHECKPOINT_RETRY_MS 1000\n'
