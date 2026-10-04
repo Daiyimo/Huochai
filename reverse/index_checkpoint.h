@@ -26,7 +26,7 @@ typedef struct {
     WCHAR database[PATH_CAP],temporary[PATH_CAP];
     ULONGLONG next,requested;
     BOOL pending;
-    IndexStamp before;
+    IndexStamp before,working;
 } IndexCheckpoint;
 
 static IndexStamp ReadIndexStamp(LPCWSTR path) {
@@ -41,6 +41,13 @@ static IndexStamp ReadIndexStamp(LPCWSTR path) {
 static BOOL SameIndexStamp(IndexStamp a,IndexStamp b) {
     return a.exists==b.exists && a.high==b.high && a.low==b.low &&
         CompareFileTime(&a.write,&b.write)==0;
+}
+/* A scratch file that only appeared, or was rewritten, after the request means
+   the engine has not committed yet. A file left behind by an earlier cancelled
+   run must never block confirmation, so it is compared with the snapshot. */
+static BOOL IndexWriteInProgress(const IndexCheckpoint *state) {
+    IndexStamp writing=ReadIndexStamp(state->temporary);
+    return writing.exists && !SameIndexStamp(writing,state->working);
 }
 static BOOL CALLBACK FindCheckpointWindow(HWND window,LPARAM parameter) {
     IndexCheckpoint *state=(IndexCheckpoint*)parameter;DWORD pid=0;WCHAR name[128];
@@ -76,8 +83,7 @@ static DWORD TickCheckpoint(IndexCheckpoint *state,HANDLE engine,HANDLE stopping
     state->next=now+1000;
     if(state->pending) {
         IndexStamp current=ReadIndexStamp(state->database);
-        if(current.exists && !SameIndexStamp(current,state->before) &&
-           GetFileAttributesW(state->temporary)==INVALID_FILE_ATTRIBUTES) {
+        if(current.exists && !SameIndexStamp(current,state->before) && !IndexWriteInProgress(state)) {
             LogEvent(L"搜索索引缓存已保存",0);state->pending=FALSE;
             state->next=now+HC_CHECKPOINT_INTERVAL_MS;
         } else if(now-state->requested>=HC_CHECKPOINT_SAVE_WAIT_MS) {
@@ -100,6 +106,7 @@ static DWORD TickCheckpoint(IndexCheckpoint *state,HANDLE engine,HANDLE stopping
         state->next=now+HC_CHECKPOINT_RETRY_MS;return HC_CHECKPOINT_RETRY_MS;
     }
     state->before=ReadIndexStamp(state->database);
+    state->working=ReadIndexStamp(state->temporary);
     if(PostMessageW(state->window,WM_USER,407,0)) {
         state->requested=now;state->pending=TRUE;
         LogEvent(L"已请求后台保存搜索索引",0);

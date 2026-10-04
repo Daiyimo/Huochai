@@ -25,7 +25,7 @@ static LRESULT CALLBACK Reply(HWND hwnd,UINT message,WPARAM w,LPARAM l) {
     return DefWindowProcW(hwnd,message,w,l);
 }
 int wmain(int argc,WCHAR **argv) {
-    WNDCLASSW wc={0};HWND reply;MSG msg;COPYDATASTRUCT copy={0};DWORD_PTR response=0;DWORD begin;
+    WNDCLASSW wc={0};HWND reply;MSG msg;COPYDATASTRUCT copy={0};DWORD_PTR response=0;ULONGLONG begin;
     struct {DWORD hwnd,id,flags,offset,max;WCHAR text[2048];} query={0};
     if(argc<3)return 2;target_pid=wcstoul(argv[1],NULL,10);EnumWindows(Locate,0);if(!target)return 3;
     if(!SendMessageTimeoutW(target,WM_USER,401,0,SMTO_ABORTIFHUNG,500,&response) || !response)return 4;
@@ -35,7 +35,7 @@ int wmain(int argc,WCHAR **argv) {
     if(FAILED(StringCchCopyW(query.text,2048,argv[2])))return 7;
     copy.dwData=2;copy.cbData=20+(lstrlenW(query.text)+1)*2;copy.lpData=&query;
     if(!SendMessageTimeoutW(target,WM_COPYDATA,(WPARAM)reply,(LPARAM)&copy,SMTO_ABORTIFHUNG,1000,&response) || !response)return 8;
-    begin=GetTickCount();while(!received && GetTickCount()-begin<5000) {
+    begin=GetTickCount64();while(!received && GetTickCount64()-begin<5000) {
         while(PeekMessageW(&msg,NULL,0,0,PM_REMOVE)){TranslateMessage(&msg);DispatchMessageW(&msg);}Sleep(5);
     }
     DestroyWindow(reply);if(!received)return 9;printf("%lu\n",total);return 0;

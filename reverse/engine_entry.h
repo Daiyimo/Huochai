@@ -14,9 +14,13 @@ static BOOL CALLBACK InitEngineEntry(PINIT_ONCE once,PVOID parameter,PVOID *cont
     DWORD n; int argc,i,bytes; size_t length,extra; BOOL control=FALSE;
     (void)once;(void)parameter;(void)context;
     n=GetModuleFileNameW(self_module,module,1024);
-    if(!n || n>=1024 || !GetModuleFileNameW(NULL,exe,1024)) return TRUE;
+    /* Without this identity the command line below cannot be scoped, and the
+       engine would start with its original arguments and its default config.
+       The launcher already refuses paths this long, so this only guards the
+       invariant instead of silently dropping it. */
+    if(!n || n>=1024 || !GetModuleFileNameW(NULL,exe,1024)) ExitProcess(ERROR_FILENAME_EXCED_RANGE);
     while(n && module[n-1]!=L'\\' && module[n-1]!=L'/') --n;
-    if(!n || FAILED(StringCchCopyW(module+n,1024-n,L"hc_engine.exe"))) return TRUE;
+    if(!n || FAILED(StringCchCopyW(module+n,1024-n,L"hc_engine.exe"))) ExitProcess(ERROR_FILENAME_EXCED_RANGE);
     own_engine=!lstrcmpiW(module,exe);
     if(!own_engine) return TRUE;
     module[n]=0;

@@ -24,7 +24,7 @@ static BOOL StartEngine(PROCESS_INFORMATION *pi) {
     CloseHandle(pi->hThread); return TRUE;
 }
 int WINAPI WinMain(HINSTANCE a,HINSTANCE b,LPSTR args,int show) {
-    WCHAR self[1024],path[1100]; DWORD n,i,hash=2166136261u,started=GetTickCount();
+    WCHAR self[1024],path[1100]; DWORD n,i,hash=2166136261u; ULONGLONG started=GetTickCount64();
     HANDLE event; PROCESS_INFORMATION pi={0}; char pid[32];
     (void)a;(void)b;(void)show;
     n=GetModuleFileNameW(NULL,self,1024); StringCchCopyW(dir,1024,self);
@@ -71,7 +71,7 @@ int WINAPI WinMain(HINSTANCE a,HINSTANCE b,LPSTR args,int show) {
         }
     }
     StringCchPrintfA(pid,32,"%lu",GetCurrentProcessId()); Write(L"ui.ready",pid);
-    while(GetTickCount()-started<120000 && !Exists(L"test-stop")) {
+    while(GetTickCount64()-started<120000 && !Exists(L"test-stop")) {
         if(Exists(L"test-restart")) {
             Path(path,L"test-restart"); DeleteFileW(path);
             TerminateProcess(pi.hProcess,0); WaitForSingleObject(pi.hProcess,5000); CloseHandle(pi.hProcess);

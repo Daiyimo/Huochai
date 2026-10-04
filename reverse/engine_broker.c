@@ -7,11 +7,14 @@
 static DWORD ManageService(const BackendPaths *paths,LPCWSTR action) {
     BOOL install=!lstrcmpiW(action,L"-install-service"),remove=!lstrcmpiW(action,L"-uninstall-service");
     BOOL start=install || !lstrcmpiW(action,L"-start-service");
-    SC_HANDLE manager=NULL,service=NULL;DWORD error=0,need=0,access=SERVICE_QUERY_CONFIG|SERVICE_QUERY_STATUS;
+    SC_HANDLE manager=NULL,service=NULL,writer=NULL;DWORD error=0,need=0,access=SERVICE_QUERY_CONFIG|SERVICE_QUERY_STATUS;
     LPQUERY_SERVICE_CONFIGW config=NULL;WCHAR command[PATH_CAP+180],image[PATH_CAP];SERVICE_STATUS status={0};ULONGLONG deadline;
     manager=OpenSCManagerW(NULL,NULL,SC_MANAGER_CONNECT|(install ? SC_MANAGER_CREATE_SERVICE:0));
     if(!manager)return GetLastError();
-    access|=start ? SERVICE_START:SERVICE_STOP;if(remove)access|=DELETE;
+    /* Request only the rights each operation needs. A standard user may be
+       allowed to stop this service but not to delete it; asking for both on one
+       handle made OpenService fail before the stop was ever attempted. */
+    access|=start ? SERVICE_START:SERVICE_STOP;
     service=OpenServiceW(manager,paths->service,access);
     if(!service && install && GetLastError()==ERROR_SERVICE_DOES_NOT_EXIST) {
         StringCchPrintfW(command,PATH_CAP+180,L"\"%s\" -svc -svc-pipe-name \"%s\"",paths->exe,paths->pipe);
@@ -22,14 +25,8 @@ static DWORD ManageService(const BackendPaths *paths,LPCWSTR action) {
     QueryServiceConfigW(service,NULL,0,&need);
     if(!need || !(config=(LPQUERY_SERVICE_CONFIGW)HeapAlloc(GetProcessHeap(),0,need)) ||
        !QueryServiceConfigW(service,config,need,&need)){error=GetLastError();goto done;}
-    {
-        LPCWSTR text=config->lpBinaryPathName,end;size_t length;
-        if(!text){error=ERROR_INVALID_DATA;goto done;}
-        if(*text==L'"'){text++;end=wcschr(text,L'"');}else{end=wcschr(text,L' ');if(!end)end=text+wcslen(text);}
-        if(!end || (length=end-text)>=PATH_CAP){error=ERROR_INVALID_DATA;goto done;}
-        CopyMemory(image,text,length*sizeof(WCHAR));image[length]=0;
-        if(!SameBackendFile(image,paths->exe)){error=ERROR_ACCESS_DENIED;goto done;}
-    }
+    if(!ParseServiceImage(config->lpBinaryPathName,image,PATH_CAP)){error=ERROR_INVALID_DATA;goto done;}
+    if(!SameBackendFile(image,paths->exe)){error=ERROR_ACCESS_DENIED;goto done;}
     if(start) {
         if(!StartServiceW(service,0,NULL) && GetLastError()!=ERROR_SERVICE_ALREADY_RUNNING){error=GetLastError();goto done;}
     } else if(!ControlService(service,SERVICE_CONTROL_STOP,&status) && GetLastError()!=ERROR_SERVICE_NOT_ACTIVE) {
@@ -38,7 +35,14 @@ static DWORD ManageService(const BackendPaths *paths,LPCWSTR action) {
     deadline=GetTickCount64()+8000;
     while(QueryServiceStatus(service,&status) && status.dwCurrentState!=(start ? SERVICE_RUNNING:SERVICE_STOPPED) && GetTickCount64()<deadline)Sleep(50);
     if(status.dwCurrentState!=(start ? SERVICE_RUNNING:SERVICE_STOPPED)){error=ERROR_SERVICE_REQUEST_TIMEOUT;goto done;}
-    if(remove && !DeleteService(service))error=GetLastError();
+    if(remove) {
+        writer=OpenServiceW(manager,paths->service,SVC_DELETE);
+        if(!writer)error=GetLastError();
+        else {
+            if(!DeleteService(writer))error=GetLastError();
+            CloseServiceHandle(writer);
+        }
+    }
 done:
     if(config)HeapFree(GetProcessHeap(),0,config);
     if(service)CloseServiceHandle(service);CloseServiceHandle(manager);return error;

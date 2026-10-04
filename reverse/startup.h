@@ -7,6 +7,8 @@
 #define HUOCHAT_STARTUP_KEY L"Software\\Microsoft\\Windows\\CurrentVersion\\Run"
 #endif
 #define STARTUP_CAP 1024
+/* Only used to read a foreign value back once; our own command is far shorter. */
+#define RUN_VALUE_CAP 8192
 
 static BOOL StartupCommand(LPCWSTR dir, WCHAR *command) {
     WCHAR marker[STARTUP_CAP], entry[STARTUP_CAP];
@@ -49,17 +51,25 @@ static BOOL IsStartupKey(HKEY key) {
 /* Preserve the enabled/disabled state. Save the old location only after repair
    succeeds, so a denied registry write can be retried on the next launch. */
 static LONG ReconcileStartup(LPCWSTR dir) {
-    WCHAR state[STARTUP_CAP],oldroot[STARTUP_CAP],oldcommand[STARTUP_CAP],value[STARTUP_CAP],command[STARTUP_CAP];
-    DWORD size=sizeof(value)-2,type; HKEY key; LONG status;
+    WCHAR state[STARTUP_CAP],oldroot[STARTUP_CAP],oldcommand[STARTUP_CAP],value[STARTUP_CAP],command[STARTUP_CAP],wide[RUN_VALUE_CAP];
+    WCHAR *text=value; DWORD size=sizeof(value)-2,capacity=sizeof(value),type; HKEY key; LONG status;
     if(FAILED(StringCchPrintfW(state,STARTUP_CAP,L"%sData\\layout.ini",dir)) || !StartupCommand(dir,command)) return ERROR_BUFFER_OVERFLOW;
     GetPrivateProfileStringW(L"Layout",L"root",L"",oldroot,STARTUP_CAP,state);
     GetPrivateProfileStringW(L"Layout",L"startup",L"",oldcommand,STARTUP_CAP,state);
     status=RegOpenKeyExW(HKEY_CURRENT_USER,HUOCHAT_STARTUP_KEY,0,KEY_QUERY_VALUE|KEY_SET_VALUE,&key);
     if(status==ERROR_SUCCESS) {
-        status=RegQueryValueExW(key,L"HuoChat",NULL,&type,(LPBYTE)value,&size);
-        if(status==ERROR_SUCCESS && size<sizeof(value)) value[size/2]=0;
-        if(status==ERROR_SUCCESS && type==REG_SZ && size>=2 && size%2==0 && size<sizeof(value) &&
-           (IsOwnStartup(value,dir,command) || (oldroot[0] && IsOwnStartup(value,oldroot,oldcommand))))
+        status=RegQueryValueExW(key,L"HuoChat",NULL,&type,(LPBYTE)text,&size);
+        /* Reporting the size error would fail the same launch forever, because
+           an over-long entry can never match the short command we expect. Read
+           it at full length once so it is still compared and simply left alone. */
+        if(status==ERROR_MORE_DATA && size<=sizeof(wide)) {
+            text=wide; capacity=sizeof(wide);
+            status=RegQueryValueExW(key,L"HuoChat",NULL,&type,(LPBYTE)text,&size);
+        }
+        else if(status==ERROR_MORE_DATA) status=ERROR_SUCCESS; /* far too long to be ours */
+        if(status==ERROR_SUCCESS && size<capacity) text[size/2]=0;
+        if(status==ERROR_SUCCESS && type==REG_SZ && size>=2 && size%2==0 && size<capacity &&
+           (IsOwnStartup(text,dir,command) || (oldroot[0] && IsOwnStartup(text,oldroot,oldcommand))))
             status=RegSetValueExW(key,L"HuoChat",0,REG_SZ,(const BYTE*)command,((DWORD)wcslen(command)+1)*2);
         RegCloseKey(key);
     }

@@ -10,14 +10,18 @@ BOOL WINAPI DllMain(HINSTANCE module,DWORD reason,LPVOID reserved) {
 HWND WINAPI Backend_FindWindowW(LPCWSTR name,LPCWSTR title) {
     BackendPaths paths;HWND window;DWORD pid,chars;HANDLE process;WCHAR exe[PATH_CAP];
     if((ULONG_PTR)name>0xffff && (!lstrcmpW(name,L"EVERYTHING_TASKBAR_NOTIFICATION") || !lstrcmpW(name,L"EVERYTHING"))) {
-        if(!BackendFromModule(&paths,own_module) || !paths.modern)return NULL;
-        /* HuoChat's startup gate also checks the ordinary Everything window. */
-        if(!lstrcmpW(name,L"EVERYTHING"))StringCchPrintfW(paths.window,128,L"EVERYTHING_(%s)",paths.instance);
-        window=FindWindowW(paths.window,title);if(!window)return NULL;
-        GetWindowThreadProcessId(window,&pid);process=OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,FALSE,pid);
-        if(!process)return NULL;chars=PATH_CAP;
-        if(!QueryFullProcessImageNameW(process,0,exe,&chars) || !SameBackendFile(exe,paths.exe))window=NULL;
-        CloseHandle(process);return window;
+        /* A layout without Engine\Everything.exe (partial install, or the engine
+           removed by hand) cannot resolve an instance. Fall back to the ordinary
+           window the 1.4 build used, instead of finding nothing at all. */
+        if(BackendFromModule(&paths,own_module) && paths.modern) {
+            /* HuoChat's startup gate also checks the ordinary Everything window. */
+            if(!lstrcmpW(name,L"EVERYTHING"))StringCchPrintfW(paths.window,128,L"EVERYTHING_(%s)",paths.instance);
+            window=FindWindowW(paths.window,title);if(!window)return NULL;
+            GetWindowThreadProcessId(window,&pid);process=OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,FALSE,pid);
+            if(!process)return NULL;chars=PATH_CAP;
+            if(!QueryFullProcessImageNameW(process,0,exe,&chars) || !SameBackendFile(exe,paths.exe))window=NULL;
+            CloseHandle(process);return window;
+        }
     }
     return FindWindowW(name,title);
 }

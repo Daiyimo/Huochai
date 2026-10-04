@@ -43,6 +43,18 @@ int wmain(int argc,WCHAR **argv) {
     CHECK(sha(HKEY_CURRENT_USER,suba,"HuoChat",REG_SZ,ansi,(DWORD)strlen(ansi))==0);CHECK(Equal(key,L"HuoChat",expected));
     CHECK(RegSetValueExW(key,L"HuoChat",0,REG_SZ,(const BYTE*)native,(DWORD)wcslen(native)*2)==0);
     CHECK(ReconcileStartup(dir)==0);CHECK(Equal(key,L"HuoChat",expected));
+    /* A value longer than the compare buffer used to be reported as a failure on
+       every launch, so the entry could never be examined or repaired. It is not
+       ours and must simply be left exactly as it is. */
+    {
+        WCHAR foreign[RUN_VALUE_CAP],back[RUN_VALUE_CAP];DWORD i,bytes=sizeof(back),type;
+        for(i=0;i+1<RUN_VALUE_CAP/2;i++)foreign[i]=L'x';foreign[RUN_VALUE_CAP/2-1]=0;
+        CHECK(Set(key,L"HuoChat",foreign)==0);
+        CHECK(ReconcileStartup(dir)==0);
+        CHECK(RegQueryValueExW(key,L"HuoChat",NULL,&type,(LPBYTE)back,&bytes)==0);
+        CHECK(!lstrcmpW(back,foreign));
+        CHECK(RegDeleteValueW(key,L"HuoChat")==0);
+    }
     RegCloseKey(other);RegCloseKey(key);FreeLibrary(module);
-    puts("Startup passed: A/W enable-disable-enable, exact-key scoping, disabled state, other apps, existing-entry repair.");return 0;
+    puts("Startup passed: A/W enable-disable-enable, exact-key scoping, disabled state, other apps, existing-entry repair, over-long entry left alone.");return 0;
 }

@@ -41,7 +41,7 @@ static HANDLE FindEngine(HANDLE job,LPCWSTR expected) {
 }
 
 static void WaitForUi(PROCESS_INFORMATION *ui,HANDLE job,LPCWSTR expected,HANDLE stopping,LPCWSTR dir) {
-    HANDLE engine=NULL,handles[3]; DWORD result,timeout,started=GetTickCount();IndexCheckpoint checkpoint={0};
+    HANDLE engine=NULL,handles[3]; DWORD result,timeout; ULONGLONG started=GetTickCount64();IndexCheckpoint checkpoint={0};
     for(;;) {
         if(WaitForSingleObject(ui->hProcess,0)==WAIT_OBJECT_0 || WaitForSingleObject(stopping,0)==WAIT_OBJECT_0)break;
         if(!engine) {
@@ -52,38 +52,29 @@ static void WaitForUi(PROCESS_INFORMATION *ui,HANDLE job,LPCWSTR expected,HANDLE
             }
         }
         handles[0]=ui->hProcess; handles[1]=stopping; handles[2]=engine;
-        timeout=engine ? TickCheckpoint(&checkpoint,engine,stopping) : GetTickCount()-started<10000 ? 500:5000;
+        timeout=engine ? TickCheckpoint(&checkpoint,engine,stopping) : GetTickCount64()-started<10000 ? 500:5000;
         result=WaitForMultipleObjects(engine ? 3:2,handles,FALSE,timeout);
         if(result==WAIT_OBJECT_0 || result==WAIT_OBJECT_0+1 || result==WAIT_FAILED) break;
         if(engine && result==WAIT_OBJECT_0+2) {
-            CloseHandle(engine); engine=NULL; started=GetTickCount();
+            CloseHandle(engine); engine=NULL; started=GetTickCount64();
             LogEvent(L"搜索引擎已退出，等待可能的重启",0);
         }
     }
     if(engine) CloseHandle(engine);
 }
 
-/* SERVICE_DELETE is 0x10000; winsvc.h hides it under WIN32_LEAN_AND_MEAN. */
-#define SVC_DELETE 0x00010000L
-
 static BOOL ServiceBelongsToDir(SC_HANDLE scm,LPCWSTR selfdir) {
     SC_HANDLE svc=NULL; BOOL owned=FALSE;
-    DWORD need=0; LPQUERY_SERVICE_CONFIGW cfg=NULL; WCHAR expected[PATH_CAP]; size_t length;
+    DWORD need=0; LPQUERY_SERVICE_CONFIGW cfg=NULL; WCHAR image[PATH_CAP];
     BackendPaths backend;if(!BackendFromDirectory(&backend,selfdir))return FALSE;
     svc=OpenServiceW(scm,backend.service,SERVICE_QUERY_CONFIG);
     if(!svc) return FALSE;
     need=0;
     QueryServiceConfigW(svc,NULL,0,&need);
     if(need) cfg=(LPQUERY_SERVICE_CONFIGW)HeapAlloc(GetProcessHeap(),0,need);
-    if(cfg && QueryServiceConfigW(svc,cfg,need,&need) && cfg->lpBinaryPathName) {
-        /* The path may be quoted; skip the quote before comparing. */
-        LPCWSTR bin=cfg->lpBinaryPathName;
-        if(*bin==L'"') ++bin;
-        if(SUCCEEDED(StringCchCopyW(expected,PATH_CAP,backend.exe))) {
-            length=wcslen(expected);
-            owned=!_wcsnicmp(bin,expected,length) && (bin[length]==0 || bin[length]==L'"' || bin[length]==L' ');
-        }
-    }
+    if(cfg && QueryServiceConfigW(svc,cfg,need,&need) &&
+       ParseServiceImage(cfg->lpBinaryPathName,image,PATH_CAP))
+        owned=SameBackendFile(image,backend.exe);
     if(cfg) HeapFree(GetProcessHeap(),0,cfg);
     CloseServiceHandle(svc);
     return owned;
@@ -161,7 +152,7 @@ static BOOL ShutdownEngines(LPCWSTR dir) {
 int WINAPI WinMain(HINSTANCE instance,HINSTANCE previous,LPSTR args,int show) {
     BackendPaths backend;
     WCHAR path[PATH_CAP],command[PATH_CAP+32],engine[PATH_CAP],dir[PATH_CAP],state[PATH_CAP],data[PATH_CAP],temp[PATH_CAP],index[PATH_CAP],probe[PATH_CAP];
-    DWORD n,error,exitcode=0; int result=0; HANDLE job=NULL,mutex=NULL,ready,stopping=NULL;
+    DWORD n,error,exitcode=0,wait; int result=0; HANDLE job=NULL,mutex=NULL,ready,stopping=NULL;
     BOOL engines_stopped;
     BOOL prepare_only=!strcmp(args,"--prepare"),startup=!strcmp(args,"-s"); LONG startup_status;
     STARTUPINFOW si={0}; PROCESS_INFORMATION pi={0}; JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits={0};
@@ -231,18 +222,21 @@ int WINAPI WinMain(HINSTANCE instance,HINSTANCE previous,LPSTR args,int show) {
     ShutdownEngines(dir);
     /* Preferences were synchronously saved before the UI signalled stopping.
        Allow native note/history teardown to finish, without waiting for scans. */
-    if(WaitForSingleObject(pi.hProcess,5000)!=WAIT_OBJECT_0) {
-        LogEvent(L"主程序退出清理超时，结束已保存设置的主进程",ERROR_TIMEOUT);
+    wait=WaitForSingleObject(pi.hProcess,5000);
+    if(wait==WAIT_OBJECT_0)GetExitCodeProcess(pi.hProcess,&exitcode);
+    else {
+        LogEvent(L"主程序退出清理超时，结束已保存设置的主进程",wait==WAIT_FAILED?GetLastError():ERROR_TIMEOUT);
         TerminateProcess(pi.hProcess,0);WaitForSingleObject(pi.hProcess,1000);
+        /* The process was still alive when it was stopped. Its live exit code
+           would be STILL_ACTIVE, and our own termination code is not a crash. */
     }
-    GetExitCodeProcess(pi.hProcess,&exitcode); CloseHandle(pi.hProcess);
-    /* Catch a helper launched by native teardown after the first snapshot. */
+    CloseHandle(pi.hProcess);
+    /* Catch a helper launched by native teardown after the first snapshot.
+       Close the job before the sweep: KILL_ON_JOB_CLOSE already ended every
+       engine it tracked, so a failure reported below is the only real one. */
+    CloseHandle(job); job=NULL;
     engines_stopped=ShutdownEngines(dir);
-    CloseHandle(job);
-    if(!engines_stopped) {
-        LogEvent(L"部分索引进程未能结束，请检查进程权限",ERROR_ACCESS_DENIED);
-    }
-    job=NULL;
+    if(!engines_stopped) LogEvent(L"部分索引进程未能结束，请检查进程权限",ERROR_ACCESS_DENIED);
     if(exitcode) { ReportFailure(L"火柴主程序异常退出。配置和便签目录已保留。",exitcode); result=6; }
     LogEvent(L"火柴退出流程已结束",0);
 finish:

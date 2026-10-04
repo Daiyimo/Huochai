@@ -9,7 +9,10 @@ typedef struct { HANDLE *items; size_t used,capacity; } MigrationLocks;
    reparse points in ancestors and visited children before any directory move. */
 static BOOL PlainPath(LPCWSTR path) {
     WCHAR copy[PATH_CAP]; DWORD i,attributes,error;
-    if(FAILED(StringCchCopyW(copy,PATH_CAP,path)) || copy[1]!=L':') { SetLastError(ERROR_BAD_PATHNAME); return FALSE; }
+    /* "C:foo" is drive-relative: it resolves against a per-drive current
+       directory, so the components scanned below would not be the real ones,
+       and the drive root check would be skipped entirely. */
+    if(FAILED(StringCchCopyW(copy,PATH_CAP,path)) || !copy[0] || copy[1]!=L':' || copy[2]!=L'\\') { SetLastError(ERROR_BAD_PATHNAME); return FALSE; }
     for(i=3;;i++) if(!copy[i] || copy[i]==L'\\') {
         WCHAR saved=copy[i]; copy[i]=0;
         attributes=GetFileAttributesW(copy); error=GetLastError(); copy[i]=saved;

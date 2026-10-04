@@ -13,6 +13,26 @@ static BOOL SameBackendFile(LPCWSTR first,LPCWSTR second) {
     return !lstrcmpiW(na && na<PATH_CAP ? a:first,nb && nb<PATH_CAP ? b:second);
 }
 
+/* DeleteService needs the DELETE access right; winsvc.h has no service-specific
+   name for it. It is asked for on a handle of its own, because a user who may
+   stop this service still may not be allowed to delete it. */
+#ifndef SVC_DELETE
+#define SVC_DELETE 0x00010000L
+#endif
+
+/* The ImagePath may be quoted. Both the broker and the launcher need only the
+   executable behind it, so the two parsings stay in one place. */
+static BOOL ParseServiceImage(LPCWSTR command,WCHAR *image,size_t count) {
+    LPCWSTR text=command,end; size_t length;
+    if(!command || !*command || count<2){SetLastError(ERROR_INVALID_DATA);return FALSE;}
+    if(*text==L'"'){text++;end=wcschr(text,L'"');if(!end){SetLastError(ERROR_INVALID_DATA);return FALSE;}}
+    else{end=wcschr(text,L' ');if(!end)end=text+wcslen(text);}
+    length=(size_t)(end-text);
+    if(!length || length>=count){SetLastError(ERROR_INVALID_DATA);return FALSE;}
+    CopyMemory(image,text,length*sizeof(WCHAR));image[length]=0;
+    return TRUE;
+}
+
 static BOOL BackendFromDirectory(BackendPaths *out,LPCWSTR dir) {
     WCHAR full[PATH_CAP],longname[PATH_CAP];DWORD n;size_t i;ULONGLONG hash=14695981039346656037ULL;
     ZeroMemory(out,sizeof(*out));n=GetFullPathNameW(dir,PATH_CAP,full,NULL);
@@ -86,6 +106,12 @@ static BOOL PrepareBackend(const BackendPaths *paths) {
         if(!JoinPath(seed,PATH_CAP,paths->root,L"Data\\Index.ini") || !CopyFileW(seed,paths->config,TRUE))return FALSE;
     }
     /* Copy preferences once; never hand a 1.4 DB to 1.5 or modify it for rollback. */
-    return UpdateConfigurationFile(paths->index,paths->index,L"Index.ini",settings,sizeof(settings)/sizeof(settings[0])) && WriteBackendPolicy(paths);
+    /* Both files below are recomputed on every launch, so a configuration that
+       is momentarily locked by a leftover engine or service, or unwritable, is
+       logged and retried next time instead of refusing to start the program. */
+    if(!UpdateConfigurationFile(paths->index,paths->index,L"Index.ini",settings,sizeof(settings)/sizeof(settings[0])))
+        LogEvent(L"无法更新引擎配置，将在下次启动时重试",GetLastError());
+    if(!WriteBackendPolicy(paths))LogEvent(L"无法写入引擎离线策略，将在下次启动时重试",GetLastError());
+    return TRUE;
 }
 #endif
