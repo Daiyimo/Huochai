@@ -445,26 +445,85 @@ static BOOL spawn_target(LPCWSTR app, LPCWSTR cmd) {
     return TRUE;
 }
 
+/* The program index lists every package Get-AppxPackage reports, including
+   packages that register only a shell extension -- share target, print dialog,
+   context menu. Their manifest still declares an Application element, but
+   marks it AppListEntry="none", so Windows never starts it as a program and no
+   AppsFolder id resolves: the entry looks like a program, and activating it
+   does nothing. Keep the enumeration to applications Windows would really
+   start, rather than hiding the symptom at launch time. A package whose
+   manifest cannot be read is kept, so an unreadable file can never remove a
+   real program from the index. */
+static const WCHAR APPX_FILTER[] =
+    L" | Where-Object { $i=$_.InstallLocation; if(-not $i){return $true};"
+    L"$m=Join-Path $i 'AppxManifest.xml';"
+    L"try{$r=(Get-Content -LiteralPath $m -Raw) -replace '(?s)<!--.*?-->','';"
+    L"$t=[regex]::Matches($r,'<Application[\\s/>]').Count;"
+    L"$n=[regex]::Matches($r,'AppListEntry\\s*=\\s*\\u0022none\\u0022').Count;"
+    L"return $t -gt $n}catch{return $true} }";
+/* The filter reaches powershell inside a command line, so it must not carry a
+   double quote of its own: the shell keeps or drops them depending on how the
+   line was quoted, and a dropped one turns the pattern into a parse error.
+   " is the regex escape for the same character and survives every
+   quoting rule unchanged, so the pattern uses that instead. */
+#define APPX_CMD_CAP 4096
+
+/* Offset of the first case-insensitive occurrence of token, or (DWORD)-1. */
+static DWORD text_offset(LPCWSTR text, LPCWSTR token) {
+    DWORD i, j;
+    if (!text || !token) return (DWORD)-1;
+    for (i = 0; text[i]; ++i) {
+        for (j = 0; token[j] && text[i+j] && lower(text[i+j]) == lower(token[j]); ++j) {}
+        if (!token[j]) return i;
+    }
+    return (DWORD)-1;
+}
+/* Extends an app-list enumeration with the filter above. FALSE means the
+   command is something else, or too long to extend: the caller then runs its
+   own command unchanged, which is always correct behaviour. */
+static BOOL appx_filter_command(LPCWSTR cmd, WCHAR *out, DWORD count) {
+    static const WCHAR token[] = L"Get-AppxPackage";
+    DWORD cut, len, extra;
+    if (!cmd || !out || count < 32) return FALSE;
+    cut = text_offset(cmd, token);
+    if (cut == (DWORD)-1) return FALSE;
+    cut += sizeof(token)/sizeof(token[0]) - 1;
+    len = lstrlenW(cmd);
+    extra = lstrlenW(APPX_FILTER);
+    if (len + extra >= count) return FALSE;
+    CopyMemory(out, cmd, cut*sizeof(WCHAR));
+    CopyMemory(out+cut, APPX_FILTER, extra*sizeof(WCHAR));
+    CopyMemory(out+cut+extra, cmd+cut, (len-cut+1)*sizeof(WCHAR));
+    return TRUE;
+}
+
 BOOL WINAPI Guard_CreateProcessW(LPCWSTR app, LPWSTR cmd, LPSECURITY_ATTRIBUTES pa,
     LPSECURITY_ATTRIBUTES ta, BOOL inherit, DWORD flags, LPVOID env, LPCWSTR dir,
     LPSTARTUPINFOW si, LPPROCESS_INFORMATION pi) {
+    WCHAR filtered[APPX_CMD_CAP];
     (void)pa; (void)ta; (void)inherit; (void)flags; (void)env; (void)dir; (void)si; (void)pi;
     if (!spawn_target(app, cmd)) { SetLastError(ERROR_ACCESS_DENIED); return FALSE; }
+    if (appx_filter_command(cmd, filtered, APPX_CMD_CAP)) cmd = filtered;
     return CreateProcessW(app, cmd, pa, ta, inherit, flags, env, dir, si, pi);
 }
 BOOL WINAPI Guard_CreateProcessA(LPCSTR app, LPSTR cmd, LPSECURITY_ATTRIBUTES pa,
     LPSECURITY_ATTRIBUTES ta, BOOL inherit, DWORD flags, LPVOID env, LPCSTR dir,
     LPSTARTUPINFOA si, LPPROCESS_INFORMATION pi) {
-    WCHAR a[1024], c[1024];
+    WCHAR a[1024], c[APPX_CMD_CAP], filtered[APPX_CMD_CAP]; CHAR out[APPX_CMD_CAP*2];
     (void)pa; (void)ta; (void)inherit; (void)flags; (void)env; (void)dir; (void)si; (void)pi;
-    if (!wide(app,a,1024) || !wide(cmd,c,1024) || !spawn_target(a,c)) {
+    if (!wide(app,a,1024) || !wide(cmd,c,APPX_CMD_CAP) || !spawn_target(a,c)) {
         SetLastError(ERROR_ACCESS_DENIED); return FALSE;
     }
+    if (appx_filter_command(c, filtered, APPX_CMD_CAP) &&
+        WideCharToMultiByte(CP_ACP,0,filtered,-1,out,sizeof(out),NULL,NULL))
+        return CreateProcessA(app, out, pa, ta, inherit, flags, env, dir, si, pi);
     return CreateProcessA(app, cmd, pa, ta, inherit, flags, env, dir, si, pi);
 }
 UINT WINAPI Guard_WinExec(LPCSTR cmd, UINT show) {
-    WCHAR c[1024];
-    if (!wide(cmd,c,1024) || !spawn_target(c,c)) { SetLastError(ERROR_ACCESS_DENIED); return 0; }
+    WCHAR c[APPX_CMD_CAP], filtered[APPX_CMD_CAP]; CHAR out[APPX_CMD_CAP*2];
+    if (!wide(cmd,c,APPX_CMD_CAP) || !spawn_target(c,c)) { SetLastError(ERROR_ACCESS_DENIED); return 0; }
+    if (appx_filter_command(c, filtered, APPX_CMD_CAP) &&
+        WideCharToMultiByte(CP_ACP,0,filtered,-1,out,sizeof(out),NULL,NULL)) return WinExec(out,show);
     return WinExec(cmd, show);
 }
 

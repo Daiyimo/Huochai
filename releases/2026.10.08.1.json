@@ -1,0 +1,34 @@
+{
+  "version": "2026.10.08.1",
+  "built_on": "2026-10-08",
+  "upstream_version": "2.1.0.11",
+  "source_revision": "39cf149bf9d7030a8f002b4198a9087f985c6b7a",
+  "artifact": {
+    "filename": "火柴单文件版.exe",
+    "size": 5342760,
+    "sha256": "7d43eb57811cf363f59d410a9f738f1a2ec6ffc90fb63abc1bec769dcd1e7ac4"
+  },
+  "engine": {
+    "version": "1.5.0.1423b",
+    "architecture": "x64",
+    "signed_upstream_sha256": "81b4d05e84e61891ac043dd76e97de616af17adf53b2ee2fe984d8b0bbbfcc21"
+  },
+  "changes": [
+    "程序索引只保留 Windows 真正会启动的应用。仅注册共享目标或外壳扩展（分享、打印对话框、右键菜单）的 MSIX 包，其 manifest 把 Application 标记为 AppListEntry=\"none\"，Windows 从不当程序启动它们，原来点击搜索结果里的这类条目不会有任何反应。守卫层在应用枚举 Get-AppxPackage 的命令行后追加过滤，只保留至少有一个可列出应用的包；manifest 读不到的包一律保留，读不了文件不会让索引丢掉真实程序。"
+  ],
+  "validation": {
+    "python_unittests": {
+      "passed": 51
+    },
+    "packaged_payload_passed": true,
+    "coverage": [
+      "实际 SDK 及原程序 IPC 查询代码",
+      "缓存、退出、设置保存及打包修复",
+      "外部进程环境继承与持锁期间的便携目录移动",
+      "shell 目标与进程启动守卫的回归（含命名空间项、带引号 UNC、空白组件名）",
+      "程序列表枚举过滤回归：未过滤基线与过滤结果逐块比对，每个保留项都必须有可启动应用，非枚举命令原样透传",
+      "零联网对抗验证：URL、UNC、设备路径、网络 DLL 加载、动态取址均被拒绝"
+    ],
+    "scope": "发布时的自动化构建与回归结果，不代表完整桌面操作验收。"
+  }
+}

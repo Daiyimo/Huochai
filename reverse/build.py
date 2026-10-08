@@ -875,6 +875,9 @@ def main():
     shutil.copy2(build/'hcg.dll',spawn/'hcg.dll')
     run(['cl.exe','/nologo','/MT','/O1','/I'+str(build),SOURCE_DIR/'test_spawn_guard.c','/link','kernel32.lib',f'/OUT:{spawn}\\test_spawn_guard.exe'],cwd=spawn,env=env)
     print(run([spawn/'test_spawn_guard.exe'],cwd=spawn).decode('utf-8','replace'),flush=True)
+    # App list: shell-extension packages must not stay in the program index.
+    run(['cl.exe','/nologo','/utf-8','/MT','/O1',SOURCE_DIR/'test_app_list.c','/link','kernel32.lib',f'/OUT:{spawn}\\test_app_list.exe'],cwd=spawn,env=env)
+    print(run([spawn/'test_app_list.exe'],cwd=spawn).decode('utf-8','replace'),flush=True)
     run(['cl.exe','/nologo','/MT','/O1',SOURCE_DIR/'test_manifests.c','/link','kernel32.lib','/OUT:test_manifests.exe'],cwd=build,env=env)
     print(run([build/'test_guards.exe'],cwd=build).decode('utf-8','replace'),flush=True)
     print(run([build/'test shell targets.exe'],cwd=build).decode('utf-8','replace'),flush=True)
